@@ -1,0 +1,8 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+<groupId>org.acme</groupId><artifactId>inventory-quarkus</artifactId><version>1.0</version>
+<properties><maven.compiler.release>21</maven.compiler.release><quarkus.platform.version>3.12.0</quarkus.platform.version></properties>
+<dependencies>
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-resteasy-reactive-jackson</artifactId></dependency>
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-hibernate-orm-panache</artifactId></dependency>
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-arc</artifactId></dependency>
+</dependencies></project>

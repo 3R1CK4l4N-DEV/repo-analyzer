@@ -1,0 +1,6 @@
+plugins { id("io.micronaut.application") version "4.4.0" }
+sourceCompatibility = JavaVersion.VERSION_21
+dependencies {
+    implementation("io.micronaut:micronaut-http-server-netty")
+    implementation("io.micronaut.data:micronaut-data-jdbc")
+}
