@@ -273,12 +273,17 @@ def rules_list(
     category: str | None = typer.Option(None, "--category"),
     unit: str | None = typer.Option(None, "--unit", help="Filter by source unit (substring)"),
     search: str | None = typer.Option(None, "--search", "-q"),
+    show_duplicates: bool = typer.Option(False, "--duplicates", help="Include rules marked as duplicates by `rules consolidate`"),
 ):
     """List business rules stored in the knowledge base."""
     from devanalyzer.kb.store import KnowledgeBase
+    from devanalyzer.llm.consolidation import duplicate_of
 
     with KnowledgeBase(_kb_path(path)) as kb:
-        _render_rules(kb.rules(status=status, category=category, unit=unit, search=search))
+        rules = kb.rules(status=status, category=category, unit=unit, search=search)
+        if not show_duplicates:
+            rules = [r for r in rules if duplicate_of(r) is None]
+        _render_rules(rules)
         console.print(json.dumps(kb.summary(), indent=2))
 
 
@@ -296,6 +301,47 @@ def rules_review(
     with KnowledgeBase(_kb_path(path)) as kb:
         ok = kb.set_status(rule_id, RuleStatus(status), note)
     console.print("[green]updated[/green]" if ok else f"[red]rule {rule_id} not found[/red]")
+
+
+@rules_app.command("consolidate")
+def rules_consolidate(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    by: str = typer.Option("both", "--by", help="module | term | both"),
+    depth: int = typer.Option(3, "--depth", help="Package depth for module grouping (0 = full package)"),
+    language: str = typer.Option("English", "--lang"),
+    workers: int | None = typer.Option(None, "--workers", "-w"),
+):
+    """Group rules by module and domain term: merge duplicates, derive cross-cutting rules, write business summaries."""
+    from devanalyzer.kb.store import KnowledgeBase
+    from devanalyzer.llm.consolidation import RuleConsolidator
+    from devanalyzer.llm.provider import get_provider
+
+    settings = get_settings()
+    provider = get_provider(settings)
+    workers = workers or (1 if provider.name == "ollama" else 4)
+    project_name = ProjectAnalyzer(settings).run(path).project_name
+    out_dir = _default_out(path.resolve())
+    with KnowledgeBase(out_dir / "kb.sqlite") as kb:
+        rules = kb.rules(project=project_name)
+        if not rules:
+            console.print("[red]No rules in the knowledge base; run `devanalyzer rules extract` first.[/red]")
+            raise typer.Exit(1)
+        consolidator = RuleConsolidator(
+            provider, project_name, cache_dir=out_dir / "cache", output_language=language, progress=lambda m: console.print(f"[dim]{m}[/dim]")
+        )
+        groups = consolidator.consolidate(rules, by=by, depth=depth, workers=workers)
+        kb.save_groups(project_name, groups, rules)
+    dups = sum(len(g.duplicates) for g in groups)
+    cross = sum(len(g.cross_cutting) for g in groups)
+    console.print(f"Groups: {len(groups)}  duplicate sets: {dups}  cross-cutting rules: {cross}")
+    for g in groups:
+        console.rule(f"[bold]{g.kind}: {g.key}[/bold] ({len(g.rule_ids)} rules)")
+        if g.summary:
+            console.print(g.summary)
+        for c in g.cross_cutting:
+            console.print(f"  [cyan]*[/cyan] {c.statement}  [dim]({', '.join(c.covers)})[/dim]")
+        for d in g.duplicates:
+            console.print(f"  [yellow]dup[/yellow] {d[0]} <- {', '.join(d[1:])}")
 
 
 @rules_app.command("eval")
@@ -363,22 +409,41 @@ def vault_generate(
     out: Path | None = typer.Option(None, "--out", "-o", help="Obsidian vault directory (default: <project>/.devanalyzer/vault)"),
     folder: str | None = typer.Option(None, "--folder", help="Sub-folder inside an existing vault to write into"),
     include_rejected: bool = typer.Option(False, "--include-rejected"),
+    sync: bool = typer.Option(True, "--sync/--no-sync", help="Before regenerating, read status/statement/review_note edited in Obsidian back into the KB"),
+    sync_only: bool = typer.Option(False, "--sync-only", help="Only sync Obsidian edits into the KB; do not regenerate notes"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With sync: show what would change without writing"),
 ):
     """Generate or refresh an Obsidian vault with architecture, rules and glossary notes."""
     from devanalyzer.kb.store import KnowledgeBase
+    from devanalyzer.obsidian.sync import sync_vault_to_kb
     from devanalyzer.obsidian.vault import ObsidianVault
 
     analysis = ProjectAnalyzer().run(path)
     kg = KnowledgeGraph.from_analysis(analysis)
     kb_path = _kb_path(path)
-    rules, glossary, decisions = [], [], []
+    vault_dir = out or (_default_out(path.resolve()) / "vault")
+    vault_base = vault_dir / folder if folder else vault_dir
+    rules, glossary, decisions, groups = [], [], [], []
     if kb_path.exists():
         with KnowledgeBase(kb_path) as kb:
+            if (sync or sync_only) and vault_base.exists():
+                res = sync_vault_to_kb(vault_base, kb, analysis.project_name, dry_run=dry_run)
+                console.print(f"Sync from Obsidian: {res.scanned} rule notes scanned, {res.changed} change(s){' (dry run)' if dry_run else ''}")
+                for rid, old, new in res.status_changes:
+                    console.print(f"  status {rid}: {old} -> {new}")
+                for rid, stmt in res.statement_changes:
+                    console.print(f"  statement {rid}: {stmt[:80]}")
+                for rid in res.note_changes:
+                    console.print(f"  note {rid}")
+                for err in res.errors:
+                    console.print(f"  [yellow]{err}[/yellow]")
+            if sync_only:
+                return
             rules = [r for r in kb.rules(project=analysis.project_name) if include_rejected or r.status.value != "rejected"]
             glossary = kb.terms(project=analysis.project_name)
             decisions = kb.decisions(project=analysis.project_name)
-    vault_dir = out or (_default_out(path.resolve()) / "vault")
-    written = ObsidianVault(vault_dir, folder).generate(analysis, kg, rules, glossary, decisions)
+            groups = kb.groups(project=analysis.project_name)
+    written = ObsidianVault(vault_dir, folder).generate(analysis, kg, rules, glossary, decisions, groups)
     console.print(f"[green]{len(written)} notes written to {vault_dir}[/green]  (rules: {len(rules)}, terms: {len(glossary)})")
     console.print("Open the folder as a vault in Obsidian; start from the '<project> - Home' note.")
 

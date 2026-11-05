@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
-from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind
+from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind, RuleGroup
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 
 GENERATED_START = "<!-- devanalyzer:generated:start -->"
@@ -24,6 +24,7 @@ FOLDERS = {
     "rules": "30 Business Rules",
     "glossary": "40 Glossary",
     "decisions": "50 Decisions",
+    "domains": "35 Domains",
     "canvas": "canvas",
 }
 
@@ -58,6 +59,9 @@ class ObsidianVault:
         self._language_by_fqn: dict[str, str] = {}
         self._ensured_dirs: set[Path] = set()
         self._pending: list[tuple[Path, str]] = []
+        self._rules_by_id: dict[str, BusinessRule] = {}
+        self._groups_module: dict[str, RuleGroup] = {}
+        self._groups_term: dict[str, RuleGroup] = {}
         self._generated_at = datetime.now(UTC).isoformat(timespec="seconds")
 
     # ------------------------------------------------------------ public
@@ -68,9 +72,13 @@ class ObsidianVault:
         rules: list[BusinessRule] | None = None,
         glossary: list[GlossaryTerm] | None = None,
         decisions: list[dict] | None = None,
+        groups: list[RuleGroup] | None = None,
     ) -> list[Path]:
         rules = rules or []
         glossary = glossary or []
+        self._rules_by_id = {r.id: r for r in rules}
+        self._groups_module = {g.key: g for g in (groups or []) if g.kind == "module"}
+        self._groups_term = {g.key: g for g in (groups or []) if g.kind == "term"}
         graph = graph or KnowledgeGraph.from_analysis(analysis)
         types = list(self._iter_types(analysis.units))
         rules_by_unit: dict[str, list[BusinessRule]] = defaultdict(list)
@@ -100,9 +108,11 @@ class ObsidianVault:
             self._write(FOLDERS["decisions"], f"ADR-{d['id']:03d} {d['title']}", self._decision_note(d))
         for build in analysis.builds:
             self._write(FOLDERS["modules"], build.project_name or build.manifest_path.replace("/", "_"), self._module_note(build, analysis))
+        for g in self._groups_module.values():
+            self._write(FOLDERS["domains"], g.key, self._domain_note(g))
 
         self._write(FOLDERS["moc"], "Architecture", self._moc_architecture(analysis, types, graph))
-        self._write(FOLDERS["moc"], "Business Rules", self._moc_rules(rules))
+        self._write(FOLDERS["moc"], "Business Rules", self._moc_rules(rules, groups or []))
         self._write(FOLDERS["moc"], "Glossary", self._moc_glossary(glossary))
         self._write("", f"{analysis.project_name} - Home", self._home(analysis, types, rules, glossary))
         self._write_canvas(analysis, types, graph)
@@ -212,6 +222,8 @@ class ObsidianVault:
             "type": "business-rule",
             "rule_id": r.id,
             "status": r.status.value,
+            "statement": r.statement,
+            "review_note": r.review_note or "",
             "category": r.category,
             "confidence": round(r.confidence, 2),
             "source_unit": r.source_unit or "",
@@ -245,11 +257,37 @@ class ObsidianVault:
     def _term_note(self, g: GlossaryTerm, rules: list[BusinessRule]) -> tuple[dict, str]:
         fm = {"type": "glossary-term", "term": g.term, "aliases": g.aliases, "tags": ["devanalyzer", "glossary"]}
         lines = [f"# {g.term}", "", g.definition or "_No definition inferred yet._", ""]
+        group = self._groups_term.get(g.term)
+        if group and (group.summary or group.cross_cutting):
+            lines += ["## Business summary", ""] + ([group.summary, ""] if group.summary else [])
+            lines += [f"- **{c.statement}** ({', '.join(self._link_rule_short(i) for i in c.covers)})" for c in group.cross_cutting] + [""]
         if g.related_units:
             lines += ["## Appears in", ""] + [f"- {self._link_fqn(u)}" for u in g.related_units] + [""]
         if rules:
             lines += ["## Rules", ""] + [f"- {self._link_rule(r)}" for r in rules] + [""]
         return fm, "\n".join(lines)
+
+    def _domain_note(self, g: RuleGroup) -> tuple[dict, str]:
+        fm = {"type": "domain", "module": g.key, "rules": len(g.rule_ids), "tags": ["devanalyzer", "domain"]}
+        lines = [f"# {g.key}", "", g.summary or "_No summary._", ""]
+        if g.cross_cutting:
+            lines += (
+                ["## Cross-cutting rules", ""]
+                + [f"- **{c.statement}** `{c.category}` — {', '.join(self._link_rule_short(i) for i in c.covers)}" for c in g.cross_cutting]
+                + [""]
+            )
+        if g.duplicates:
+            lines += (
+                ["## Merged duplicates", ""]
+                + [f"- {self._link_rule_short(d[0])} ⇐ {', '.join(self._link_rule_short(o) for o in d[1:])}" for d in g.duplicates]
+                + [""]
+            )
+        lines += ["## Rules in this module", ""] + [f"- {self._link_rule(self._rules_by_id[i])}" for i in g.rule_ids if i in self._rules_by_id] + [""]
+        return fm, "\n".join(lines)
+
+    def _link_rule_short(self, rule_id: str) -> str:
+        r = self._rules_by_id.get(rule_id)
+        return f"[[{safe_name(f'{r.id} {r.statement[:60]}')}|{r.id}]]" if r else rule_id
 
     def _decision_note(self, d: dict) -> tuple[dict, str]:
         fm = {"type": "decision", "created_at": d.get("created_at", ""), "tags": ["devanalyzer", "adr"]}
@@ -311,9 +349,14 @@ class ObsidianVault:
         lines += ["![[architecture.canvas]]", ""]
         return fm, "\n".join(lines)
 
-    def _moc_rules(self, rules: list[BusinessRule]) -> tuple[dict, str]:
+    def _moc_rules(self, rules: list[BusinessRule], groups: list[RuleGroup]) -> tuple[dict, str]:
         fm = {"type": "moc", "tags": ["devanalyzer", "moc"]}
         lines = ["# Business Rules", ""]
+        cross = [(g, c) for g in groups if g.kind == "module" for c in g.cross_cutting]
+        if cross:
+            lines += ["## Cross-cutting rules", ""] + [f"- **{c.statement}** — [[{safe_name(g.key)}|{g.key}]]" for g, c in cross] + [""]
+        if any(g.kind == "module" for g in groups):
+            lines += ["## Domains", ""] + [f"- [[{safe_name(g.key)}|{g.key}]] ({len(g.rule_ids)} rules)" for g in groups if g.kind == "module"] + [""]
         by_cat: dict[str, list[BusinessRule]] = defaultdict(list)
         for r in rules:
             by_cat[r.category].append(r)

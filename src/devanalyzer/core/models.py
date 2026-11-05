@@ -178,6 +178,7 @@ class BusinessRule(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source_unit: str | None = None
     model: str | None = None
+    review_note: str | None = None
 
 
 class GlossaryTerm(BaseModel):
@@ -186,6 +187,22 @@ class GlossaryTerm(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     related_units: list[str] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
+
+
+class CrossCuttingRule(BaseModel):
+    statement: str
+    category: str = "general"
+    covers: list[str] = Field(default_factory=list)
+
+
+class RuleGroup(BaseModel):
+    kind: str  # "module" | "term"
+    key: str  # package / module path, or glossary term
+    rule_ids: list[str] = Field(default_factory=list)
+    summary: str = ""
+    cross_cutting: list[CrossCuttingRule] = Field(default_factory=list)
+    duplicates: list[list[str]] = Field(default_factory=list)  # each list: [canonical, other, other...]
+    model: str | None = None
 
 
 class RuleExtractionResult(BaseModel):

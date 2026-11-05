@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from devanalyzer.core.models import BusinessRule, GlossaryTerm, RuleExtractionResult, RuleStatus
+from devanalyzer.core.models import BusinessRule, GlossaryTerm, RuleExtractionResult, RuleGroup, RuleStatus
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS decisions (
     title TEXT NOT NULL,
     body TEXT,
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rule_groups (
+    project TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    rule_ids TEXT,
+    summary TEXT,
+    cross_cutting TEXT,
+    duplicates TEXT,
+    model TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (project, kind, key)
 );
 CREATE INDEX IF NOT EXISTS idx_rules_project ON rules(project);
 CREATE INDEX IF NOT EXISTS idx_rules_unit ON rules(source_unit);
@@ -150,13 +162,14 @@ class KnowledgeBase:
             cur.execute("INSERT INTO rule_history (rule_id, run_id, change) VALUES (?, ?, 'new')", (rule.id, run_id))
             return "new"
         change = "seen" if existing["content_hash"] == content_hash else "changed"
-        # Human review decisions (status/review_note) are preserved across runs.
+        # Human review decisions (status/review_note) and human-edited wording are preserved across runs.
+        human = existing["reviewed_by"] == "human"
         cur.execute(
             """UPDATE rules SET statement=?, rationale=?, category=?, confidence=?, source_unit=?, model=?,
                tags=?, domain_terms=?, evidence=?, last_seen_run=?, content_hash=? WHERE id=?""",
             (
-                rule.statement,
-                rule.rationale,
+                existing["statement"] if human else rule.statement,
+                existing["rationale"] if human else rule.rationale,
                 rule.category,
                 rule.confidence,
                 rule.source_unit,
@@ -243,6 +256,16 @@ class KnowledgeBase:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def set_statement(self, rule_id: str, statement: str) -> bool:
+        """Human correction of the wording; the id stays stable and later extractions won't overwrite it."""
+        row = self.conn.execute("SELECT statement, rationale FROM rules WHERE id=?", (rule_id,)).fetchone()
+        if row is None:
+            return False
+        rationale = f"{row['rationale'] or ''}\n[human] original statement: {row['statement']}".strip()
+        self.conn.execute("UPDATE rules SET statement=?, rationale=?, reviewed_by='human' WHERE id=?", (statement, rationale, rule_id))
+        self.conn.commit()
+        return True
+
     def terms(self, project: str | None = None, search: str | None = None) -> list[GlossaryTerm]:
         clauses, params = [], []
         if project:
@@ -268,6 +291,51 @@ class KnowledgeBase:
 
     def history(self, rule_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM rule_history WHERE rule_id=? ORDER BY id", (rule_id,))]
+
+    # ------------------------------------------------------------ consolidation
+    def save_groups(self, project: str, groups: list[RuleGroup], rules: list[BusinessRule]) -> None:
+        for g in groups:
+            self.conn.execute(
+                """INSERT INTO rule_groups (project, kind, key, rule_ids, summary, cross_cutting, duplicates, model, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(project, kind, key) DO UPDATE SET rule_ids=excluded.rule_ids, summary=excluded.summary,
+                   cross_cutting=excluded.cross_cutting, duplicates=excluded.duplicates, model=excluded.model, updated_at=excluded.updated_at""",
+                (
+                    project,
+                    g.kind,
+                    g.key,
+                    json.dumps(g.rule_ids),
+                    g.summary,
+                    json.dumps([c.model_dump() for c in g.cross_cutting]),
+                    json.dumps(g.duplicates),
+                    g.model,
+                    _now(),
+                ),
+            )
+        for r in rules:  # persist duplicate-of tags
+            self.conn.execute("UPDATE rules SET tags=? WHERE id=?", (json.dumps(r.tags), r.id))
+        self.conn.commit()
+
+    def groups(self, project: str | None = None, kind: str | None = None) -> list[RuleGroup]:
+        clauses, params = [], []
+        if project:
+            clauses.append("project=?"), params.append(project)
+        if kind:
+            clauses.append("kind=?"), params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(f"SELECT * FROM rule_groups {where} ORDER BY kind, key", params).fetchall()
+        return [
+            RuleGroup(
+                kind=r["kind"],
+                key=r["key"],
+                rule_ids=json.loads(r["rule_ids"] or "[]"),
+                summary=r["summary"] or "",
+                cross_cutting=json.loads(r["cross_cutting"] or "[]"),
+                duplicates=json.loads(r["duplicates"] or "[]"),
+                model=r["model"],
+            )
+            for r in rows
+        ]
 
     def add_decision(self, project: str, title: str, body: str) -> int:
         cur = self.conn.execute("INSERT INTO decisions (project, title, body, created_at) VALUES (?, ?, ?, ?)", (project, title, body, _now()))
@@ -302,4 +370,5 @@ class KnowledgeBase:
             tags=json.loads(r["tags"] or "[]"),
             source_unit=r["source_unit"],
             model=r["model"],
+            review_note=r["review_note"],
         )
