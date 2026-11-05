@@ -4,7 +4,9 @@ from collections import Counter
 
 from devanalyzer.core.models import CodeUnit, CodeUnitKind, ProjectMetrics, Relation, RelationKind, SourceFile
 
-TYPE_KINDS = (CodeUnitKind.CLASS, CodeUnitKind.INTERFACE, CodeUnitKind.ENUM, CodeUnitKind.RECORD)
+TYPE_KINDS = (CodeUnitKind.CLASS, CodeUnitKind.INTERFACE, CodeUnitKind.ENUM, CodeUnitKind.RECORD, CodeUnitKind.MODULE)
+CALLABLE_KINDS = (CodeUnitKind.METHOD, CodeUnitKind.FUNCTION)
+COUPLING_KINDS = {RelationKind.IMPORTS, RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS}
 
 
 def iter_types(units: list[CodeUnit]):
@@ -20,16 +22,18 @@ def compute_metrics(files: list[SourceFile], units: list[CodeUnit], relations: l
     by_kind: Counter[str] = Counter()
     for t in types:
         by_kind[t.kind.value] += 1
-        by_kind["method"] += sum(1 for c in t.children if c.kind == CodeUnitKind.METHOD)
+        by_kind["method"] += sum(1 for c in t.children if c.kind in CALLABLE_KINDS)
         by_kind["field"] += sum(1 for c in t.children if c.kind == CodeUnitKind.FIELD)
+    by_kind["function"] += sum(1 for u in units if u.kind == CodeUnitKind.FUNCTION)
+    if by_kind["function"] == 0:
+        del by_kind["function"]
 
     fan_in: Counter[str] = Counter()
     fan_out: Counter[str] = Counter()
-    coupling_kinds = {RelationKind.IMPORTS, RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS}
     type_names = {t.fqn for t in types}
     seen: set[tuple[str, str]] = set()
     for r in relations:
-        if r.kind in coupling_kinds and r.source in type_names and r.target in type_names and r.source != r.target:
+        if r.kind in COUPLING_KINDS and r.source in type_names and r.target in type_names and r.source != r.target:
             if (r.source, r.target) in seen:
                 continue
             seen.add((r.source, r.target))
