@@ -1,6 +1,6 @@
 # DevAnalyzer — Estado actual y mejoras a definir
 
-Fecha: 2026-11-05 (actualizado tras iteración 2) · Rama `main` (local, 20 commits, sin push) · 60/60 tests
+Fecha: 2026-11-05 (actualizado tras iteración 3) · Rama `main` (local, 27 commits, sin push) · 72/72 tests
 
 ---
 
@@ -42,13 +42,19 @@ devanalyzer report | snapshot | diff  → HTML/MD autocontenido, diff estructura
 | O4 | `vault --sync`: status/review_note/statement editados en Obsidian → KB; ediciones humanas sobreviven re-extracciones | Hecho | `95cdb2e` |
 | O1 | Mermaid: classDiagram por módulo/arquitectura, sequenceDiagram por endpoint, erDiagram | Hecho | `daec95e` |
 | L5 | Esquema de BD desde migraciones (Flyway/SQL, Liquibase XML+YAML, Alembic, TypeORM, Prisma); entity→tabla; `60 Data` | Hecho | `05c0b6c` |
+| L1 | Kotlin (tree-sitter-kotlin) en el plugin JVM; propiedades de constructor como inyección; `kotlin("jvm") version` | Hecho | `19c5631` |
+| L2 | Jakarta/JAX-RS (`@Path`+verbos), CDI scopes, Quarkus Panache, Micronaut (`@Controller/@Get`), detección de frameworks | Hecho | `7e21cfe` |
+| R3+R4 | Prompt con foco por estereotipo + contexto de dependencias/tabla; reintento de reparación JSON | Hecho | `f62c6cd` |
+| G2 | Flujos end-to-end por endpoint (capas, tablas, reglas, read/write); `70 Flows`, MOC, MCP `get_flows` | Hecho | `ad06da8` |
+| G1 | Búsqueda semántica: embeddings en SQLite (Ollama `nomic-embed-text` / OpenAI), `index`/`search`, MCP `semantic_search` | Hecho (código); **pendiente validar con modelo real: `ollama pull nomic-embed-text` falló por red** | `8dde065` |
+| G4 | Workspaces multi-repo: enlaces HTTP (literales/Feign), eventos (Kafka/Rabbit/SQS/Quarkus/NestJS), tablas compartidas; `workspace.md` con mapa Mermaid | Hecho | `3cd53b5` |
 
 ### 1.3 Validación con proyectos reales
 
 | Proyecto | Resultado |
 |---|---|
 | `~/IdeaProjects/BancoProject` (tuyo) | Maven, Java 17, Spring Boot 3.0.0, Lombok. Test de integración automático |
-| `spring-projects/spring-petclinic` (clonado y auditado: checksum wrapper OK, sin hooks, sin repos externos) | 17 endpoints, 304 nodos, 7 tablas con mapeo entidad→tabla; 13 reglas en español; **eval P/R 91%** (generador `qwen2.5-coder:7b` + juez `qwen3:8b`); consolidación detecta 1 duplicado real |
+| `spring-projects/spring-petclinic` (clonado y auditado) | 17 endpoints, 304 nodos, 7 tablas con mapeo entidad→tabla; flujos alcanzan tablas (`POST /owners/{id}/pets/new` → owners, pets). Eval con gold de 17 reglas: prompt v1 **F1 74%** (P91/R62) → prompt v2 (R3+R4) **F1 78%** (P70/R88); los FP restantes son en su mayoría duplicados que `rules consolidate` fusiona y 2 técnicos que el juez 8b no rechaza |
 | DevAnalyzer sobre sí mismo (dogfooding) | 523 nodos / 1.717 aristas; test automático |
 | Sintético 3.000 clases Spring | Análisis estático completo ~5.5 s; grafo 18.8k nodos |
 
@@ -163,11 +169,29 @@ Pendientes de decidir: **D4** (embeddings: recomiendo Ollama `nomic-embed-text` 
 
 ---
 
-## 4. Iteración 2 — completada
+## 4. Iteración 3 — completada
+
+L1 Kotlin → L2 Jakarta/Quarkus/Micronaut → R3+R4 → G2 flujos → G1 semántica → G4 multi-repo.
+
+Hallazgos relevantes:
+- El cambio de prompt (R3+R4) sube recall 62→88% pero baja precisión 91→70%: ahora extrae todas las restricciones `@NotBlank/@Size` de entidades (correctas) y algunas duplicadas por clase hija/padre. Medido con `rules eval`, no estimado.
+- Un modelo 7b rompe el JSON en prompts largos (~1 de 13 unidades): el reintento de reparación lo resolvió (0 errores).
+- G1 queda sin validación real porque el pull del modelo de embeddings no completó desde esta red (`ollama pull nomic-embed-text` → timeout IPv6 hacia Cloudflare). Al tenerlo: `devanalyzer index <proyecto>` y `devanalyzer search <proyecto> "pregunta"`.
+
+## 4b. Iteración 2 — completada
 
 X1 → R2 → R1 → O4 → O1 → L5, todo con tests y validado en spring-petclinic.
 
-## 5. Propuesta de iteración 3
+## 5. Propuesta de iteración 4
+
+1. **Validar G1** con `nomic-embed-text` real y usar la búsqueda semántica como RAG en el prompt de reglas (contexto relevante por similitud, no solo por dependencias).
+2. **Precisión de reglas**: dedup estructural previo al LLM (misma anotación/condición en clase padre e hija → una sola regla), y juez con rúbrica “técnico vs negocio” más estricta; meta: F1 ≥ 85% en petclinic sin perder recall.
+3. **Workspace en vault/MCP**: notas “Related services” por proyecto y tool `get_workspace_links`.
+4. **Django / Next.js** (D3): urls.py/views y rutas por carpeta `app/api`.
+5. **X2 `watch`** y **X6 reporte en PR** cuando decidas D7.
+6. **Push** cuando lo autorices (D8); CI ya está listo.
+
+## 5b. Propuesta de iteración 3 (histórico)
 
 1. **L1 Kotlin** (tree-sitter-kotlin; mismas heurísticas Spring) — tu cartera lo usa.
 2. **L2 Jakarta/Quarkus/Micronaut** (JAX-RS `@Path/@GET`, CDI `@Inject`, Panache) — bajo esfuerzo sobre el parser Java actual.
