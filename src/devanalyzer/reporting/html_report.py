@@ -201,6 +201,10 @@ def render_markdown(
     ]
     if analysis.metrics.stereotypes:
         lines += ["## Stereotypes", ""] + [f"- {k}: {v}" for k, v in sorted(analysis.metrics.stereotypes.items())] + [""]
+    if types:
+        from devanalyzer.obsidian.mermaid import class_diagram
+
+        lines += ["## Architecture", "", class_diagram(types, graph, title=analysis.project_name), ""]
     if analysis.endpoints:
         lines += (
             ["## Endpoints", "", "| Method | Path | Handler |", "|---|---|---|"]

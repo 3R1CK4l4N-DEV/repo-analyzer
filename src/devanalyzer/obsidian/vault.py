@@ -9,6 +9,7 @@ from pathlib import Path
 
 from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind, RuleGroup
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
+from devanalyzer.obsidian.mermaid import class_diagram, sequence_diagram
 
 GENERATED_START = "<!-- devanalyzer:generated:start -->"
 GENERATED_END = "<!-- devanalyzer:generated:end -->"
@@ -60,6 +61,8 @@ class ObsidianVault:
         self._ensured_dirs: set[Path] = set()
         self._pending: list[tuple[Path, str]] = []
         self._rules_by_id: dict[str, BusinessRule] = {}
+        self._types: list[CodeUnit] = []
+        self._graph: KnowledgeGraph | None = None
         self._groups_module: dict[str, RuleGroup] = {}
         self._groups_term: dict[str, RuleGroup] = {}
         self._generated_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -81,6 +84,8 @@ class ObsidianVault:
         self._groups_term = {g.key: g for g in (groups or []) if g.kind == "term"}
         graph = graph or KnowledgeGraph.from_analysis(analysis)
         types = list(self._iter_types(analysis.units))
+        self._types = types
+        self._graph = graph
         rules_by_unit: dict[str, list[BusinessRule]] = defaultdict(list)
         for r in rules:
             if r.source_unit:
@@ -215,6 +220,8 @@ class ObsidianVault:
             f"**Framework:** {ep.framework or '-'}",
             "",
         ]
+        if diagram := sequence_diagram(ep, self._types, self._graph):
+            body += ["## Flow", "", diagram, ""]
         return fm, "\n".join(body)
 
     def _rule_note(self, r: BusinessRule, analysis: ProjectAnalysis) -> tuple[dict, str]:
@@ -270,6 +277,9 @@ class ObsidianVault:
     def _domain_note(self, g: RuleGroup) -> tuple[dict, str]:
         fm = {"type": "domain", "module": g.key, "rules": len(g.rule_ids), "tags": ["devanalyzer", "domain"]}
         lines = [f"# {g.key}", "", g.summary or "_No summary._", ""]
+        module_types = [t for t in self._types if t.fqn.replace("/", ".").startswith(g.key + ".")]
+        if module_types:
+            lines += ["## Class diagram", "", class_diagram(module_types, self._graph, title=g.key), ""]
         if g.cross_cutting:
             lines += (
                 ["## Cross-cutting rules", ""]
@@ -346,6 +356,7 @@ class ObsidianVault:
             "```",
             "",
         ]
+        lines += ["## Class diagram", "", class_diagram(types, graph, title=analysis.project_name), ""]
         lines += ["![[architecture.canvas]]", ""]
         return fm, "\n".join(lines)
 
