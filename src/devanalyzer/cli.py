@@ -576,6 +576,32 @@ def semantic_search(
     console.print(t)
 
 
+@app.command("workspace")
+def workspace_cmd(
+    path: Path = typer.Argument(..., exists=True, help="Directory containing several projects (or a devanalyzer.workspace.json)"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Output directory (default: <dir>/.devanalyzer)"),
+):
+    """Analyze several repositories together and map the links between them (HTTP calls, events, shared tables)."""
+    from devanalyzer.core.workspace import WorkspaceAnalyzer, WorkspaceConfig, workspace_markdown
+
+    config = WorkspaceConfig.load(path)
+    if not config.projects:
+        console.print("[red]No projects found. Add sub-directories with a build manifest or a devanalyzer.workspace.json.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Workspace [bold]{config.name}[/bold]: " + ", ".join(p.name for p in config.projects))
+    ws = WorkspaceAnalyzer(get_settings()).run(config)
+    out_dir = out or (path.resolve() / get_settings().output_dir_name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "workspace.json").write_text(ws.model_dump_json(indent=2), encoding="utf-8")
+    (out_dir / "workspace.md").write_text(workspace_markdown(ws), encoding="utf-8")
+    t = Table(title="Service links")
+    t.add_column("Kind"), t.add_column("Source"), t.add_column("Target"), t.add_column("Label"), t.add_column("Evidence")
+    for link in ws.links:
+        t.add_row(link.kind, link.source, link.target, link.label, f"{link.evidence_file}:{link.evidence_line}" if link.evidence_file else "")
+    console.print(t)
+    console.print(f"[green]Written {out_dir / 'workspace.md'} and workspace.json[/green]  ({len(ws.links)} links, {len(ws.topics)} topics)")
+
+
 @app.command("serve")
 def serve(
     path: Path = typer.Argument(..., exists=True, help="Project root"),
