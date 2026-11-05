@@ -87,6 +87,26 @@ def test_extract_clamps_out_of_range_lines(spring_analysis, fixtures):
     assert rule.evidence[0].line_start == 11 and rule.evidence[0].line_end == 21
 
 
+def test_parallel_extraction_matches_sequential_and_is_faster(spring_analysis, fixtures, tmp_path):
+    import time
+
+    class SlowProvider(FakeProvider):
+        def generate(self, prompt, system=None, temperature=0.0):
+            time.sleep(0.15)
+            return super().generate(prompt, system, temperature)
+
+    seq = BusinessRuleExtractor(SlowProvider()).extract(spring_analysis, fixtures / "java_spring")
+    t = time.perf_counter()
+    par = BusinessRuleExtractor(SlowProvider(), cache_dir=tmp_path / "c").extract(spring_analysis, fixtures / "java_spring", workers=4)
+    elapsed = time.perf_counter() - t
+    assert par.units_analyzed == seq.units_analyzed >= 3
+    assert [r.id for r in par.rules] == [r.id for r in seq.rules]
+    assert [g.term for g in par.glossary] == [g.term for g in seq.glossary]
+    assert elapsed < 0.15 * seq.units_analyzed * 0.75  # clearly faster than sequential
+    assert len(list((tmp_path / "c").glob("*.json"))) == par.units_analyzed  # cache written atomically, no .tmp leftovers
+    assert not list((tmp_path / "c").glob("*.tmp"))
+
+
 def test_kb_ingest_dedups_and_preserves_review(spring_analysis, fixtures, tmp_path):
     result = BusinessRuleExtractor(FakeProvider()).extract(spring_analysis, fixtures / "java_spring", stereotypes={"service"})
     with KnowledgeBase(tmp_path / "kb.sqlite") as kb:

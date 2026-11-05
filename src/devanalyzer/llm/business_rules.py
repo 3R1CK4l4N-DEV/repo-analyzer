@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -78,6 +81,8 @@ class BusinessRuleExtractor:
         self.output_language = output_language
         self.progress = progress or (lambda _msg: None)
         self.template = PROMPT_PATH.read_text(encoding="utf-8")
+        self._line_cache: dict[Path, list[str]] = {}
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------ selection
     @staticmethod
@@ -101,6 +106,7 @@ class BusinessRuleExtractor:
         root: str | Path,
         stereotypes: set[str | None] | None = None,
         limit: int | None = None,
+        workers: int = 1,
     ) -> RuleExtractionResult:
         root = Path(root)
         result = RuleExtractionResult(project_name=analysis.project_name, model=self.provider.model)
@@ -110,25 +116,37 @@ class BusinessRuleExtractor:
         glossary: dict[str, GlossaryTerm] = {}
         seen_rules: set[str] = set()
 
+        # Phase 1: build prompts sequentially (file reads are cached, cheap).
+        jobs: list[tuple[CodeUnit, str]] = []
         for unit in units:
             code = self._slice(root / unit.file, unit.line_start, unit.line_end)
             if not code:
                 result.units_skipped += 1
                 continue
-            self.progress(f"{unit.fqn}")
-            prompt = self._prompt(analysis, unit, code)
+            jobs.append((unit, self._prompt(analysis, unit, code)))
+
+        # Phase 2: call the LLM, in parallel when the provider allows it; results keep job order.
+        def run(job: tuple[CodeUnit, str]) -> tuple[CodeUnit, _LLMResponse | None, str | None]:
+            unit, prompt = job
+            self.progress(unit.fqn)
             try:
                 raw = self._cached_generate(prompt)
-                parsed = _LLMResponse.model_validate(parse_llm_json(raw))
-            except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-                result.errors.append(f"{unit.fqn}: {type(exc).__name__}: {exc}")
-                result.units_skipped += 1
-                continue
-            except Exception as exc:  # provider/network failures should not abort the whole run
-                result.errors.append(f"{unit.fqn}: {type(exc).__name__}: {exc}")
-                result.units_skipped += 1
-                continue
+                return unit, _LLMResponse.model_validate(parse_llm_json(raw)), None
+            except Exception as exc:  # malformed JSON or provider/network failures must not abort the run
+                return unit, None, f"{unit.fqn}: {type(exc).__name__}: {exc}"
 
+        if workers > 1 and len(jobs) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                outcomes = list(pool.map(run, jobs))
+        else:
+            outcomes = [run(j) for j in jobs]
+
+        # Phase 3: merge deterministically.
+        for unit, parsed, error in outcomes:
+            if parsed is None:
+                result.errors.append(error or unit.fqn)
+                result.units_skipped += 1
+                continue
             result.units_analyzed += 1
             for r in parsed.rules:
                 rule = self._to_rule(r, unit, root)
@@ -187,10 +205,10 @@ class BusinessRuleExtractor:
         )
 
     def _lines(self, path: Path) -> list[str]:
-        cache = self.__dict__.setdefault("_line_cache", {})
-        if path not in cache:
-            cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
-        return cache[path]
+        with self._lock:
+            if path not in self._line_cache:
+                self._line_cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+            return self._line_cache[path]
 
     def _slice(self, path: Path, start: int, end: int, numbered: bool = True) -> str:
         lines = self._lines(path)
@@ -210,5 +228,8 @@ class BusinessRuleExtractor:
             return json.loads(cache_file.read_text(encoding="utf-8"))["response"]
         response = self.provider.generate(prompt, system=SYSTEM_PROMPT)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"model": self.provider.model, "response": response}), encoding="utf-8")
+        # Atomic write so concurrent workers never observe a half-written cache entry.
+        tmp = cache_file.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"model": self.provider.model, "response": response}), encoding="utf-8")
+        os.replace(tmp, cache_file)
         return response

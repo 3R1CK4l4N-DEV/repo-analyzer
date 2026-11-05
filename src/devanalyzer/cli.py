@@ -223,8 +223,11 @@ def rules_extract(
     stereotype: list[str] = typer.Option([], "--stereotype", "-s", help="Only these stereotypes (service, controller, entity...)"),
     language: str = typer.Option("English", "--lang", help="Language for the rule statements (e.g. Spanish)"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached LLM responses"),
+    workers: int | None = typer.Option(None, "--workers", "-w", help="Parallel LLM calls (default: 1 for ollama, 4 for cloud providers)"),
 ):
     """Infer business rules with the configured LLM and store them in the knowledge base."""
+    import itertools
+
     from devanalyzer.kb.store import KnowledgeBase
     from devanalyzer.llm.business_rules import BusinessRuleExtractor
     from devanalyzer.llm.provider import get_provider
@@ -233,15 +236,17 @@ def rules_extract(
     analysis = ProjectAnalyzer(settings).run(path)
     out_dir = _default_out(path.resolve())
     provider = get_provider(settings)
+    workers = workers or (1 if provider.name == "ollama" else 4)
+    counter = itertools.count(1)
     extractor = BusinessRuleExtractor(
         provider,
         settings,
         cache_dir=None if no_cache else out_dir / "cache",
         output_language=language,
-        progress=lambda fqn: console.print(f"[dim]analyzing {fqn}[/dim]"),
+        progress=lambda fqn: console.print(f"[dim][{next(counter)}] {fqn}[/dim]"),
     )
-    console.print(f"Provider: {provider.name}  Model: {provider.model}")
-    result = extractor.extract(analysis, path, stereotypes=set(stereotype) or None, limit=limit)
+    console.print(f"Provider: {provider.name}  Model: {provider.model}  Workers: {workers}")
+    result = extractor.extract(analysis, path, stereotypes=set(stereotype) or None, limit=limit, workers=workers)
     (out_dir / "rules.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
     with KnowledgeBase(out_dir / "kb.sqlite") as kb:
         counts = kb.ingest(result)
