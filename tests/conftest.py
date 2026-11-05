@@ -10,6 +10,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
 def settings() -> Settings:
     return Settings(_env_file=None)
 

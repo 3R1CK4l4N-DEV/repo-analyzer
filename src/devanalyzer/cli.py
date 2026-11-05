@@ -322,5 +322,21 @@ def vault_generate(
     console.print("Open the folder as a vault in Obsidian; start from the '<project> - Home' note.")
 
 
+@app.command("serve")
+def serve(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    sse: bool = typer.Option(False, "--sse", help="Serve over HTTP/SSE instead of stdio"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+):
+    """Start the MCP server so AI agents can query the graph, rules and glossary."""
+    try:
+        from devanalyzer.mcp_server.server import run
+    except ImportError:
+        console.print("[red]Install the optional dependency: pip install 'devanalyzer[mcp]'[/red]")
+        raise typer.Exit(1)
+    run(path, transport="sse" if sse else "stdio", host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
