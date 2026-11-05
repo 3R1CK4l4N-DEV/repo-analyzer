@@ -18,7 +18,7 @@ Hoja de ruta completa en [MEGAPLAN.md](MEGAPLAN.md).
 | M7 Servidor MCP | Listo |
 | M8 Plugin Node/TS (NestJS, Express) | Listo |
 | M9 Plugin Python (FastAPI, Flask) | Listo |
-| M10 Reportes HTML, diff entre corridas, modo incremental | Pendiente |
+| M10 Reportes HTML/Markdown y diff entre corridas | Listo |
 
 ## Instalación
 
@@ -59,9 +59,19 @@ devanalyzer vault <ruta> --out "C:/MiVault" --folder "Proyectos/mi-app"   # dent
 # Servidor MCP para agentes IA (stdio por defecto; --sse para HTTP)
 devanalyzer serve <ruta>
 
+# Reporte autocontenido (HTML con diagrama SVG, o Markdown)
+devanalyzer report <ruta>                 # .devanalyzer/report.html
+devanalyzer report <ruta> --format md -o informe.md
+
+# Diff estructural entre corridas (tipos, métodos, endpoints, deps, versiones)
+devanalyzer snapshot <ruta>               # guarda baseline
+devanalyzer diff <ruta> [--update]
+
 # Verificar proveedor LLM configurado
 devanalyzer llm-ping
 ```
+
+Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (proveedor, modelo, prompt), así que re-ejecutar `rules extract` solo consulta al modelo para unidades cuyo código cambió.
 
 ### Configurar el servidor MCP en un cliente
 
@@ -116,5 +126,6 @@ src/devanalyzer/
 ├── kb/                    # KnowledgeBase SQLite
 ├── graph/                 # KnowledgeGraph (NetworkX)
 ├── obsidian/              # generador de vault
+├── reporting/             # reporte HTML/MD y diff entre análisis
 └── mcp_server/            # servidor MCP (FastMCP)
 ```

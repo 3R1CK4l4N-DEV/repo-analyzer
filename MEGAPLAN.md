@@ -20,7 +20,7 @@
 | M7 | Hecho | `7b9be57` |
 | M8 | Hecho | `fb68d43` |
 | M9 | Hecho | `d81710b` |
-| M10 | Pendiente | — |
+| M10 | Hecho (reporte HTML/MD + snapshot/diff; incremental vía cache LLM) | ver git log |
 
 Desviaciones respecto al plan original: `compute_metrics` vive en `core/metrics.py` (compartido); PageRank usa la variante pura de Python de NetworkX (sin numpy/scipy); el vault no usa Jinja2 (plantillas en Python); `mcp` es extra opcional (`pip install -e ".[mcp]"`).
 

@@ -322,6 +322,71 @@ def vault_generate(
     console.print("Open the folder as a vault in Obsidian; start from the '<project> - Home' note.")
 
 
+def _load_kb_data(path: Path, project_name: str):
+    kb_path = _kb_path(path)
+    if not kb_path.exists():
+        return [], []
+    from devanalyzer.kb.store import KnowledgeBase
+
+    with KnowledgeBase(kb_path) as kb:
+        return kb.rules(project=project_name), kb.terms(project=project_name)
+
+
+@app.command("report")
+def report(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    fmt: str = typer.Option("html", "--format", "-f", help="html | md"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Output file (default: <project>/.devanalyzer/report.<fmt>)"),
+):
+    """Render a self-contained HTML or Markdown report (architecture, endpoints, rules, glossary)."""
+    from devanalyzer.reporting.html_report import render_html, render_markdown
+
+    analysis = ProjectAnalyzer().run(path)
+    kg = KnowledgeGraph.from_analysis(analysis)
+    rules, glossary = _load_kb_data(path, analysis.project_name)
+    rules = [r for r in rules if r.status.value != "rejected"]
+    if fmt not in ("html", "md"):
+        console.print("[red]--format must be html or md[/red]")
+        raise typer.Exit(1)
+    content = render_html(analysis, kg, rules, glossary) if fmt == "html" else render_markdown(analysis, kg, rules, glossary)
+    target = out or (_default_out(path.resolve()) / f"report.{fmt}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    console.print(f"[green]Report written to {target}[/green]")
+
+
+@app.command("snapshot")
+def snapshot(path: Path = typer.Argument(..., exists=True, help="Project root")):
+    """Save the current analysis as the baseline for `devanalyzer diff`."""
+    analysis = ProjectAnalyzer().run(path)
+    out_dir = _default_out(path.resolve())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "analysis.json").write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
+    console.print(f"[green]Snapshot saved to {out_dir / 'analysis.json'}[/green]")
+
+
+@app.command("diff")
+def diff(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    baseline: Path | None = typer.Option(None, "--baseline", "-b", help="analysis.json to compare against (default: <project>/.devanalyzer/analysis.json)"),
+    update: bool = typer.Option(False, "--update", help="Overwrite the baseline with the current analysis afterwards"),
+):
+    """Compare the current code structure against the last snapshot (types, methods, endpoints, deps, versions)."""
+    from devanalyzer.reporting.diff import diff_analyses, render_diff_markdown
+
+    base_path = baseline or (_default_out(path.resolve()) / "analysis.json")
+    if not base_path.is_file():
+        console.print(f"[red]No baseline at {base_path}. Run `devanalyzer snapshot {path}` or `graph build` first.[/red]")
+        raise typer.Exit(1)
+    before = ProjectAnalysis.model_validate_json(base_path.read_text(encoding="utf-8"))
+    after = ProjectAnalyzer().run(path)
+    result = diff_analyses(before, after)
+    console.print(render_diff_markdown(result))
+    if update:
+        base_path.write_text(after.model_dump_json(indent=2), encoding="utf-8")
+        console.print(f"[green]Baseline updated: {base_path}[/green]")
+
+
 @app.command("serve")
 def serve(
     path: Path = typer.Argument(..., exists=True, help="Project root"),
