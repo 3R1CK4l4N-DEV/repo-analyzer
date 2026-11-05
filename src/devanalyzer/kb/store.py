@@ -135,6 +135,9 @@ class KnowledgeBase:
                 tags, terms, evidence, run_id, content_hash, rule.id,
             ),
         )
+        # Automated verdicts may only override rules nobody has reviewed yet.
+        if existing["status"] == RuleStatus.INFERRED.value and rule.status != RuleStatus.INFERRED:
+            cur.execute("UPDATE rules SET status=? WHERE id=?", (rule.status.value, rule.id))
         if change == "changed":
             cur.execute(
                 "INSERT INTO rule_history (rule_id, run_id, change, previous) VALUES (?, ?, 'changed', ?)",

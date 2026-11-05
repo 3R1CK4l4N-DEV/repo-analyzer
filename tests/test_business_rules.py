@@ -107,6 +107,31 @@ def test_parallel_extraction_matches_sequential_and_is_faster(spring_analysis, f
     assert not list((tmp_path / "c").glob("*.tmp"))
 
 
+def test_verify_pass_adjusts_rules(spring_analysis, fixtures, tmp_path):
+    class Verifier(FakeProvider):
+        def generate(self, prompt, system=None, temperature=0.0):
+            if "auditing a BUSINESS RULE" in prompt:
+                if "cannot exceed 10,000" in prompt:
+                    return json.dumps({"verdict": "supported", "confidence": 0.95, "reason": "MAX_DEPOSIT check"})
+                return json.dumps({"verdict": "technical", "confidence": 0.2, "reason": "not a domain rule"})
+            return super().generate(prompt, system, temperature)
+
+    extractor = BusinessRuleExtractor(Verifier())
+    result = extractor.extract(spring_analysis, fixtures / "java_spring", stereotypes={"service"})
+    result = extractor.verify(result, root=fixtures / "java_spring", workers=2)
+    kept, rejected = result.rules
+    assert kept.status == RuleStatus.INFERRED and kept.confidence == 0.95 and "verdict/supported" in kept.tags
+    assert rejected.status == RuleStatus.REJECTED and "verdict/technical" in rejected.tags and "[verifier]" in rejected.rationale
+
+    with KnowledgeBase(tmp_path / "kb.sqlite") as kb:
+        kb.ingest(result)
+        assert kb.rule(rejected.id).status == RuleStatus.REJECTED
+        # a human confirmation must survive a later automated rejection
+        kb.set_status(rejected.id, RuleStatus.CONFIRMED, "it is a real rule")
+        kb.ingest(result)
+        assert kb.rule(rejected.id).status == RuleStatus.CONFIRMED
+
+
 def test_kb_ingest_dedups_and_preserves_review(spring_analysis, fixtures, tmp_path):
     result = BusinessRuleExtractor(FakeProvider()).extract(spring_analysis, fixtures / "java_spring", stereotypes={"service"})
     with KnowledgeBase(tmp_path / "kb.sqlite") as kb:

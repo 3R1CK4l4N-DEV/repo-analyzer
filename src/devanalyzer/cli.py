@@ -224,6 +224,7 @@ def rules_extract(
     language: str = typer.Option("English", "--lang", help="Language for the rule statements (e.g. Spanish)"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached LLM responses"),
     workers: int | None = typer.Option(None, "--workers", "-w", help="Parallel LLM calls (default: 1 for ollama, 4 for cloud providers)"),
+    verify: bool = typer.Option(False, "--verify", help="Second LLM pass that audits each rule against its evidence (rejects unsupported/technical ones)"),
 ):
     """Infer business rules with the configured LLM and store them in the knowledge base."""
     import itertools
@@ -247,6 +248,14 @@ def rules_extract(
     )
     console.print(f"Provider: {provider.name}  Model: {provider.model}  Workers: {workers}")
     result = extractor.extract(analysis, path, stereotypes=set(stereotype) or None, limit=limit, workers=workers)
+    if verify:
+        from devanalyzer.llm.provider import get_verify_provider
+
+        judge = get_verify_provider(settings)
+        console.print(f"Verifier: {judge.name}/{judge.model}")
+        result = extractor.verify(result, root=path, workers=workers, judge=judge)
+        rejected = sum(1 for r in result.rules if r.status.value == "rejected")
+        console.print(f"Verifier: {len(result.rules) - rejected} kept, {rejected} rejected as unsupported/technical")
     (out_dir / "rules.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
     with KnowledgeBase(out_dir / "kb.sqlite") as kb:
         counts = kb.ingest(result)

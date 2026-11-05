@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     llm_provider: str = "ollama"
     llm_model: str = "qwen2.5-coder:7b"
+    # Optional second model acting as judge in `rules extract --verify` (defaults to llm_model).
+    verify_provider: str | None = None
+    verify_model: str | None = None
     ollama_host: str = "http://localhost:11434"
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None

@@ -20,10 +20,12 @@ from devanalyzer.core.models import (
     GlossaryTerm,
     ProjectAnalysis,
     RuleExtractionResult,
+    RuleStatus,
 )
 from devanalyzer.llm.provider import LLMProvider
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "business_rules.md"
+VERIFY_PROMPT_PATH = Path(__file__).parent / "prompts" / "verify_rule.md"
 TYPE_KINDS = {CodeUnitKind.CLASS, CodeUnitKind.INTERFACE, CodeUnitKind.ENUM, CodeUnitKind.RECORD, CodeUnitKind.MODULE}
 DEFAULT_STEREOTYPES = {"service", "controller", "entity", "component", "advice", None}
 SYSTEM_PROMPT = "You extract business rules from code and answer strictly with valid JSON."
@@ -47,6 +49,19 @@ class _LLMTerm(BaseModel):
 class _LLMResponse(BaseModel):
     rules: list[_LLMRule] = Field(default_factory=list)
     glossary: list[_LLMTerm] = Field(default_factory=list)
+
+
+class _LLMVerdict(BaseModel):
+    verdict: str = "supported"
+    confidence: float = 0.5
+    corrected_statement: str | None = None
+    reason: str | None = None
+
+    def model_post_init(self, __context) -> None:
+        self.verdict = self.verdict.strip().lower()
+        if self.verdict not in ("supported", "partial", "unsupported", "technical"):
+            self.verdict = "partial"
+        self.confidence = max(0.0, min(1.0, self.confidence))
 
 
 def rule_id(statement: str, file: str) -> str:
@@ -166,6 +181,62 @@ class BusinessRuleExtractor:
         result.glossary = sorted(glossary.values(), key=lambda g: g.term.lower())
         return result
 
+    # ------------------------------------------------------------ verification
+    def verify(self, result: RuleExtractionResult, root: str | Path | None = None, workers: int = 1, context_lines: int = 6, judge: LLMProvider | None = None) -> RuleExtractionResult:
+        """Second LLM pass: judge each rule strictly against its evidence (plus surrounding context).
+
+        Adjusts confidence, tags the verdict, rewrites 'partial' statements and moves
+        'unsupported'/'technical' rules to REJECTED so humans can focus on the rest.
+        """
+        template = VERIFY_PROMPT_PATH.read_text(encoding="utf-8")
+        root = Path(root) if root else None
+        judge = judge or self.provider
+
+        def run(rule: BusinessRule) -> tuple[BusinessRule, _LLMVerdict | None, str | None]:
+            ev = rule.evidence[0] if rule.evidence else None
+            if ev is None or not ev.snippet:
+                return rule, None, None
+            self.progress(f"verify {rule.id}")
+            # The extractor's line numbers are often off by a few lines; widen the window so the
+            # verifier sees annotations/conditions right next to the cited range.
+            start, end, snippet = ev.line_start, ev.line_end, ev.snippet
+            if root is not None:
+                start, end = max(1, ev.line_start - context_lines), ev.line_end + context_lines
+                snippet = self._slice(root / ev.file, start, end) or ev.snippet
+            prompt = template.format(
+                statement=rule.statement, rationale=rule.rationale or "-", file=ev.file, line_start=start,
+                line_end=end, language=self._language_of(rule), snippet=snippet, output_language=self.output_language,
+            )
+            try:
+                return rule, _LLMVerdict.model_validate(parse_llm_json(self._cached_generate(prompt, judge))), None
+            except Exception as exc:
+                return rule, None, f"verify {rule.id}: {type(exc).__name__}: {exc}"
+
+        if workers > 1 and len(result.rules) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                outcomes = list(pool.map(run, result.rules))
+        else:
+            outcomes = [run(r) for r in result.rules]
+
+        for rule, verdict, error in outcomes:
+            if error:
+                result.errors.append(error)
+            if verdict is None:
+                continue
+            rule.tags = [t for t in rule.tags if not t.startswith("verdict/")] + [f"verdict/{verdict.verdict}"]
+            rule.confidence = round(min(rule.confidence, verdict.confidence) if verdict.verdict != "supported" else max(rule.confidence, verdict.confidence), 2)
+            if verdict.verdict == "partial" and verdict.corrected_statement and verdict.corrected_statement.strip() != rule.statement:
+                rule.rationale = f"{rule.rationale or ''}\n[verifier] original: {rule.statement} — {verdict.reason}".strip()
+                rule.statement = verdict.corrected_statement.strip()
+            elif verdict.verdict in ("unsupported", "technical"):
+                rule.status = RuleStatus.REJECTED
+                rule.rationale = f"{rule.rationale or ''}\n[verifier] {verdict.verdict}: {verdict.reason}".strip()
+        return result
+
+    def _language_of(self, rule: BusinessRule) -> str:
+        ev_file = rule.evidence[0].file if rule.evidence else ""
+        return {"java": "java", "py": "python", "ts": "typescript", "tsx": "typescript", "js": "javascript"}.get(ev_file.rsplit(".", 1)[-1], "")
+
     def _to_rule(self, r: _LLMRule, unit: CodeUnit, root: Path) -> BusinessRule:
         start = r.line_start if r.line_start and unit.line_start <= r.line_start <= unit.line_end else unit.line_start
         end = r.line_end if r.line_end and start <= r.line_end <= unit.line_end else min(start + 10, unit.line_end)
@@ -219,17 +290,18 @@ class BusinessRuleExtractor:
             return "\n".join(f"{start + i:>5}| {ln}" for i, ln in enumerate(chunk))
         return "\n".join(chunk)
 
-    def _cached_generate(self, prompt: str) -> str:
+    def _cached_generate(self, prompt: str, provider: LLMProvider | None = None) -> str:
+        provider = provider or self.provider
         if self.cache_dir is None:
-            return self.provider.generate(prompt, system=SYSTEM_PROMPT)
-        key = hashlib.sha256(f"{self.provider.name}|{self.provider.model}|{prompt}".encode()).hexdigest()
+            return provider.generate(prompt, system=SYSTEM_PROMPT)
+        key = hashlib.sha256(f"{provider.name}|{provider.model}|{prompt}".encode()).hexdigest()
         cache_file = self.cache_dir / f"{key}.json"
         if cache_file.is_file():
             return json.loads(cache_file.read_text(encoding="utf-8"))["response"]
-        response = self.provider.generate(prompt, system=SYSTEM_PROMPT)
+        response = provider.generate(prompt, system=SYSTEM_PROMPT)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # Atomic write so concurrent workers never observe a half-written cache entry.
         tmp = cache_file.with_suffix(f".{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({"model": self.provider.model, "response": response}), encoding="utf-8")
+        tmp.write_text(json.dumps({"model": provider.model, "response": response}), encoding="utf-8")
         os.replace(tmp, cache_file)
         return response

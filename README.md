@@ -48,6 +48,7 @@ devanalyzer graph query <ruta> --path AccountController AccountRepository
 # Reglas de negocio con IA (usa el proveedor de .env; cache en .devanalyzer/cache)
 devanalyzer rules extract <ruta> --lang Spanish            # todas las unidades con lógica
 devanalyzer rules extract <ruta> --stereotype service -l 5 # acotar
+devanalyzer rules extract <ruta> --verify -w 4             # segunda pasada: un modelo juez audita cada regla contra su evidencia
 devanalyzer rules list <ruta> --status inferred
 devanalyzer rules review <ruta> BR-xxxxxxxxxx --status confirmed --note "validado con negocio"
 devanalyzer rules glossary <ruta>
@@ -87,6 +88,10 @@ Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (prove
 ```
 
 Tools expuestas: `get_project_summary`, `list_code_units`, `get_code_unit`, `query_graph`, `find_path`, `list_endpoints`, `list_dependencies`, `get_business_rules`, `review_business_rule`, `search_knowledge`, `get_glossary`, `read_source`, `refresh_analysis`.
+
+### Calidad de las reglas: generador + juez
+
+`--verify` hace una segunda pasada donde un modelo juzga cada regla **solo contra el código citado** (con contexto). Marca `verdict/supported|partial|unsupported|technical`, corrige enunciados sobre-afirmados y rechaza automáticamente los no sustentados. Usa un modelo distinto al generador con `DEVANALYZER_VERIFY_MODEL` (p. ej. `qwen3:8b`): en spring-petclinic el juez `qwen3:8b` detectó las 2 alucinaciones de `qwen2.5-coder:7b` sin falsos positivos. Una confirmación humana nunca es pisada por el juez.
 
 ### Flujo recomendado
 
