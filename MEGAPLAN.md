@@ -11,7 +11,20 @@
 | Obsidian | Generación de vault Markdown (notas, wikilinks, frontmatter, canvas) **+ servidor MCP** para consultar grafo/KB |
 | IA | Abstracción `LLMProvider` con implementaciones **Ollama** (local) y **cloud** (OpenAI/Anthropic) configurables por `.env` |
 
-## Estado actual del proyecto
+## Estado de ejecución
+
+| Milestone | Estado | Commit |
+|---|---|---|
+| M0–M3 | Hecho | `938e4e7` |
+| M4–M6 | Hecho | `a9dd931` |
+| M7 | Hecho | `7b9be57` |
+| M8 | Hecho | `fb68d43` |
+| M9 | Hecho | `d81710b` |
+| M10 | Pendiente | — |
+
+Desviaciones respecto al plan original: `compute_metrics` vive en `core/metrics.py` (compartido); PageRank usa la variante pura de Python de NetworkX (sin numpy/scipy); el vault no usa Jinja2 (plantillas en Python); `mcp` es extra opcional (`pip install -e ".[mcp]"`).
+
+## Estado inicial del proyecto (histórico)
 
 - ~10 archivos sueltos en raíz (sin paquete, sin tests, sin CLI).
 - `OllamaClient` mínimo funcional (qwen2.5-coder:7b, qwen3:8b instalados).

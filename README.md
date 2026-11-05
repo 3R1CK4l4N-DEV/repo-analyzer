@@ -12,12 +12,13 @@ Hoja de ruta completa en [MEGAPLAN.md](MEGAPLAN.md).
 | M1 Plugins de lenguaje + detección de build (Maven, Gradle, npm/pnpm/yarn, pip/poetry/uv) | Listo |
 | M2 Análisis Java con AST (tree-sitter) + heurísticas Spring | Listo |
 | M3 Grafo de conocimiento (NetworkX, JSON/GraphML) | Listo |
-| M4 LLM + reglas de negocio | Pendiente |
-| M5 Knowledge base | Pendiente |
-| M6 Vault Obsidian | Pendiente |
-| M7 Servidor MCP | Pendiente |
-| M8 Plugin Node/TS | Pendiente (solo detección) |
-| M9 Plugin Python | Pendiente (solo detección) |
+| M4 Reglas de negocio con LLM (Ollama / OpenAI / Anthropic) | Listo |
+| M5 Knowledge base SQLite (reglas, glosario, historial, revisión humana) | Listo |
+| M6 Vault Obsidian (notas, MOCs, canvas, Dataview) | Listo |
+| M7 Servidor MCP | Listo |
+| M8 Plugin Node/TS (NestJS, Express) | Listo |
+| M9 Plugin Python (FastAPI, Flask) | Listo |
+| M10 Reportes HTML, diff entre corridas, modo incremental | Pendiente |
 
 ## Instalación
 
@@ -44,9 +45,46 @@ devanalyzer graph query <ruta> --neighbors AccountService --depth 2
 devanalyzer graph query <ruta> --top 10
 devanalyzer graph query <ruta> --path AccountController AccountRepository
 
+# Reglas de negocio con IA (usa el proveedor de .env; cache en .devanalyzer/cache)
+devanalyzer rules extract <ruta> --lang Spanish            # todas las unidades con lógica
+devanalyzer rules extract <ruta> --stereotype service -l 5 # acotar
+devanalyzer rules list <ruta> --status inferred
+devanalyzer rules review <ruta> BR-xxxxxxxxxx --status confirmed --note "validado con negocio"
+devanalyzer rules glossary <ruta>
+
+# Vault de Obsidian (por defecto en <ruta>/.devanalyzer/vault)
+devanalyzer vault <ruta>
+devanalyzer vault <ruta> --out "C:/MiVault" --folder "Proyectos/mi-app"   # dentro de un vault existente
+
+# Servidor MCP para agentes IA (stdio por defecto; --sse para HTTP)
+devanalyzer serve <ruta>
+
 # Verificar proveedor LLM configurado
 devanalyzer llm-ping
 ```
+
+### Configurar el servidor MCP en un cliente
+
+```json
+{
+  "mcpServers": {
+    "devanalyzer": {
+      "command": "C:/ruta/al/.venv/Scripts/devanalyzer.exe",
+      "args": ["serve", "C:/ruta/al/proyecto"]
+    }
+  }
+}
+```
+
+Tools expuestas: `get_project_summary`, `list_code_units`, `get_code_unit`, `query_graph`, `find_path`, `list_endpoints`, `list_dependencies`, `get_business_rules`, `review_business_rule`, `search_knowledge`, `get_glossary`, `read_source`, `refresh_analysis`.
+
+### Flujo recomendado
+
+1. `devanalyzer analyze` para validar detección.
+2. `devanalyzer rules extract` (las reglas nacen con estado `inferred`).
+3. `devanalyzer vault` y abrir en Obsidian: revisar reglas, escribir notas manuales fuera del bloque generado.
+4. `devanalyzer rules review` para confirmar/rechazar; el estado sobrevive a re-extracciones.
+5. `devanalyzer serve` para que un agente consulte el conocimiento del proyecto.
 
 `graph.graphml` se puede abrir en Gephi o yEd; `graph.json` es formato node-link de NetworkX.
 
@@ -71,9 +109,12 @@ src/devanalyzer/
 │   ├── plugin.py          # LanguagePlugin Protocol + registry
 │   └── analyzer.py        # orquestador
 ├── languages/
-│   ├── java/              # parser tree-sitter, Spring, métricas
-│   ├── node/              # detección (M8)
-│   └── python/            # detección (M9)
-├── llm/                   # LLMProvider: ollama, openai, anthropic
-└── graph/                 # KnowledgeGraph (NetworkX)
+│   ├── java/              # tree-sitter + heurísticas Spring
+│   ├── node/              # tree-sitter JS/TS + NestJS/Express
+│   └── python/            # ast nativo + FastAPI/Flask
+├── llm/                   # LLMProvider (ollama/openai/anthropic), extractor de reglas, prompts
+├── kb/                    # KnowledgeBase SQLite
+├── graph/                 # KnowledgeGraph (NetworkX)
+├── obsidian/              # generador de vault
+└── mcp_server/            # servidor MCP (FastMCP)
 ```
