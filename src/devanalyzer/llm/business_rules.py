@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from devanalyzer.config import Settings, get_settings
 from devanalyzer.core.models import (
@@ -19,6 +19,7 @@ from devanalyzer.core.models import (
     Evidence,
     GlossaryTerm,
     ProjectAnalysis,
+    RelationKind,
     RuleExtractionResult,
     RuleStatus,
 )
@@ -29,6 +30,15 @@ VERIFY_PROMPT_PATH = Path(__file__).parent / "prompts" / "verify_rule.md"
 TYPE_KINDS = {CodeUnitKind.CLASS, CodeUnitKind.INTERFACE, CodeUnitKind.ENUM, CodeUnitKind.RECORD, CodeUnitKind.MODULE}
 DEFAULT_STEREOTYPES = {"service", "controller", "entity", "component", "advice", None}
 SYSTEM_PROMPT = "You extract business rules from code and answer strictly with valid JSON."
+
+STEREOTYPE_FOCUS: dict[str, str] = {
+    "entity": "invariants of the domain object: mandatory fields, formats/patterns, ranges, uniqueness, valid state values and transitions, derived values. Validation annotations (@NotBlank, @Size, @Pattern, @Min/@Max, nullable=false) ARE business rules; ignore ids/timestamps/ORM mapping details.",
+    "service": "policies, calculations, thresholds/limits, preconditions that throw or reject, state transitions, authorization checks, and the order in which steps must happen.",
+    "controller": "input constraints beyond the DTO, authorization/ownership checks, which operations exist for which actor, redirects/decisions that depend on business state. Ignore HTTP plumbing, serialization and error pages.",
+    "repository": "query constraints that encode business meaning (e.g. only active records, soft deletes, date windows). Plain CRUD/finders are NOT rules.",
+    "component": "cross-cutting policies (scheduling windows, retries with business meaning, feature toggles that change behaviour for customers).",
+    "advice": "how business errors are classified and surfaced; ignore technical exception mapping.",
+}
 
 
 class _LLMRule(BaseModel):
@@ -97,6 +107,7 @@ class BusinessRuleExtractor:
         self.progress = progress or (lambda _msg: None)
         self.template = PROMPT_PATH.read_text(encoding="utf-8")
         self._line_cache: dict[Path, list[str]] = {}
+        self._index_cache: tuple[ProjectAnalysis, dict[str, CodeUnit]] | None = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------ selection
@@ -145,8 +156,7 @@ class BusinessRuleExtractor:
             unit, prompt = job
             self.progress(unit.fqn)
             try:
-                raw = self._cached_generate(prompt)
-                return unit, _LLMResponse.model_validate(parse_llm_json(raw)), None
+                return unit, self._generate_json(prompt, _LLMResponse), None
             except Exception as exc:  # malformed JSON or provider/network failures must not abort the run
                 return unit, None, f"{unit.fqn}: {type(exc).__name__}: {exc}"
 
@@ -216,7 +226,7 @@ class BusinessRuleExtractor:
                 output_language=self.output_language,
             )
             try:
-                return rule, _LLMVerdict.model_validate(parse_llm_json(self._cached_generate(prompt, judge))), None
+                return rule, self._generate_json(prompt, _LLMVerdict, judge), None
             except Exception as exc:
                 return rule, None, f"verify {rule.id}: {type(exc).__name__}: {exc}"
 
@@ -281,7 +291,66 @@ class BusinessRuleExtractor:
             line_end=unit.line_end,
             code=code,
             output_language=self.output_language,
+            focus=self._focus(unit),
+            context=self._context(analysis, unit),
         )
+
+    @staticmethod
+    def _focus(unit: CodeUnit) -> str:
+        """Stereotype-specific guidance (R3): what kind of rules usually live in this unit."""
+        text = STEREOTYPE_FOCUS.get(unit.stereotype or "", "")
+        return f"\nFocus for this {unit.stereotype or 'unit'}: {text}\n" if text else ""
+
+    def _context(self, analysis: ProjectAnalysis, unit: CodeUnit, max_deps: int = 6, max_members: int = 8) -> str:
+        """Signatures of project-internal dependencies plus the mapped DB table (R4), so calls into other
+        classes and persisted fields are understandable without guessing."""
+        index = self._unit_index(analysis)
+        dep_fqns: list[str] = []
+        for rel in analysis.relations:
+            if (
+                rel.source == unit.fqn
+                and rel.kind in (RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS)
+                and rel.target in index
+                and rel.target not in dep_fqns
+            ):
+                dep_fqns.append(rel.target)
+        blocks: list[str] = []
+        for fqn in dep_fqns[:max_deps]:
+            dep = index[fqn]
+            members = [c for c in dep.children if c.kind in (CodeUnitKind.METHOD, CodeUnitKind.FUNCTION)][:max_members]
+            fields = [c for c in dep.children if c.kind == CodeUnitKind.FIELD][:max_members]
+            sig = [f"{m.name}({', '.join(p.type or p.name for p in m.parameters)}){' -> ' + m.type if m.type else ''}" for m in members]
+            line = f"- {dep.kind.value} {dep.name}" + (f" <{dep.stereotype}>" if dep.stereotype else "")
+            if dep.docstring:
+                line += f": {dep.docstring.splitlines()[0][:100]}"
+            if sig:
+                line += "\n    methods: " + "; ".join(sig)
+            if fields and dep.stereotype == "entity":
+                line += "\n    fields: " + ", ".join(f"{f.type or '?'} {f.name}" for f in fields)
+            blocks.append(line)
+        tables = [t for t in analysis.db_schema.tables if unit.fqn in t.mapped_entities]
+        for t in tables:
+            cols = ", ".join(f"{c.name}{' PK' if c.primary_key else ''}{'' if c.nullable else ' NOT NULL'}" for c in t.columns[:16])
+            fks = "; ".join(f"{fk.column} -> {fk.ref_table}" for fk in t.foreign_keys)
+            blocks.append(f"- persisted in table `{t.name}`: {cols}" + (f"\n    foreign keys: {fks}" if fks else ""))
+        if not blocks:
+            return ""
+        return (
+            "\nProject context (signatures only; do not infer rules from the context alone, use it to understand the code above):\n" + "\n".join(blocks) + "\n"
+        )
+
+    def _unit_index(self, analysis: ProjectAnalysis) -> dict[str, CodeUnit]:
+        with self._lock:
+            if self._index_cache is None or self._index_cache[0] is not analysis:
+                index: dict[str, CodeUnit] = {}
+                stack = list(analysis.units)
+                while stack:
+                    u = stack.pop()
+                    if u.kind in TYPE_KINDS:
+                        index[u.fqn] = u
+                        stack.extend(c for c in u.children if c.kind in TYPE_KINDS)
+                self._index_cache = (analysis, index)
+            return self._index_cache[1]
 
     def _lines(self, path: Path) -> list[str]:
         with self._lock:
@@ -297,6 +366,22 @@ class BusinessRuleExtractor:
         if numbered:
             return "\n".join(f"{start + i:>5}| {ln}" for i, ln in enumerate(chunk))
         return "\n".join(chunk)
+
+    def _generate_json(self, prompt: str, model: type[BaseModel], provider: LLMProvider | None = None, retries: int = 1):
+        """Generate + parse; on malformed JSON ask the model once to repair its own output (local 7b models
+        occasionally break JSON on long prompts, which would otherwise lose every rule of that unit)."""
+        raw = self._cached_generate(prompt, provider)
+        try:
+            return model.model_validate(parse_llm_json(raw))
+        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+            if retries <= 0:
+                raise
+            repair = (
+                "The following text was supposed to be a single valid JSON object but failed to parse "
+                f"({type(exc).__name__}: {str(exc)[:120]}). Return ONLY the corrected JSON object, nothing else.\n\n{raw[:6000]}"
+            )
+            fixed = self._cached_generate(repair, provider)
+            return model.model_validate(parse_llm_json(fixed))
 
     def _cached_generate(self, prompt: str, provider: LLMProvider | None = None) -> str:
         provider = provider or self.provider

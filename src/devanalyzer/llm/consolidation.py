@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from devanalyzer.core.models import BusinessRule, CrossCuttingRule, RuleGroup, RuleStatus
-from devanalyzer.llm.business_rules import BusinessRuleExtractor, parse_llm_json
+from devanalyzer.llm.business_rules import BusinessRuleExtractor
 from devanalyzer.llm.provider import LLMProvider
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "consolidate.md"
@@ -90,7 +90,7 @@ class RuleConsolidator:
             )
             group = RuleGroup(kind=kind, key=key, rule_ids=[r.id for r in rs], model=self.provider.model)
             try:
-                parsed = _LLMConsolidation.model_validate(parse_llm_json(self._gen._cached_generate(prompt)))
+                parsed = self._gen._generate_json(prompt, _LLMConsolidation)
             except Exception as exc:
                 group.summary = f"[error] {type(exc).__name__}: {exc}"
                 return group

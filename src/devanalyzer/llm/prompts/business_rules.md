@@ -9,10 +9,11 @@ Project: {project_name}
 Language: {language}
 Unit: {unit_fqn} ({unit_kind}{stereotype})
 File: {file} (lines {line_start}-{line_end})
-
+{focus}
 ```{language}
 {code}
 ```
+{context}
 
 Return ONLY a JSON object with this exact shape (no prose, no markdown fences):
 {{
