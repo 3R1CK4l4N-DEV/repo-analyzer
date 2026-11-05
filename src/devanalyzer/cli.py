@@ -35,7 +35,9 @@ def main(version: bool = typer.Option(False, "--version", callback=_version, is_
 def _render_summary(analysis: ProjectAnalysis) -> None:
     console.rule(f"[bold]{analysis.project_name}[/bold]")
     console.print(f"Path: {analysis.project_path}")
-    console.print(f"Files: {analysis.metrics.files}  LOC: {analysis.metrics.loc}")
+    console.print(
+        f"Files: {analysis.metrics.files}  LOC: {analysis.metrics.loc}  Endpoints: {len(analysis.endpoints)}  Tables: {len(analysis.db_schema.tables)}"
+    )
 
     t = Table(title="Languages")
     t.add_column("Language"), t.add_column("Confidence"), t.add_column("Files"), t.add_column("LOC")
@@ -83,6 +85,20 @@ def _render_units(analysis: ProjectAnalysis) -> None:
     console.print(t)
 
 
+def _render_tables(analysis: ProjectAnalysis) -> None:
+    t = Table(title=f"Database tables ({', '.join(analysis.db_schema.sources[:3]) or 'none'})")
+    t.add_column("Table"), t.add_column("Columns"), t.add_column("Foreign keys"), t.add_column("Entities"), t.add_column("Source")
+    for tb in analysis.db_schema.tables:
+        t.add_row(
+            tb.name,
+            str(len(tb.columns)),
+            ", ".join(f"{fk.column}->{fk.ref_table}" for fk in tb.foreign_keys),
+            ", ".join(e.rsplit(".", 1)[-1] for e in tb.mapped_entities),
+            f"{tb.source_file}:{tb.line}",
+        )
+    console.print(t)
+
+
 def _render_endpoints(analysis: ProjectAnalysis) -> None:
     t = Table(title="Endpoints")
     t.add_column("Method"), t.add_column("Path"), t.add_column("Handler"), t.add_column("Location")
@@ -94,7 +110,7 @@ def _render_endpoints(analysis: ProjectAnalysis) -> None:
 @app.command()
 def analyze(
     path: Path = typer.Argument(..., exists=True, help="Project root to analyze"),
-    show: list[str] = typer.Option([], "--show", "-s", help="Extra sections: deps, units, endpoints, all"),
+    show: list[str] = typer.Option([], "--show", "-s", help="Extra sections: deps, units, endpoints, tables, all"),
     json_out: Path | None = typer.Option(None, "--json", help="Write full analysis as JSON to this file"),
 ):
     """Analyze a project: languages, build system, versions, frameworks, structure."""
@@ -102,13 +118,15 @@ def analyze(
     _render_summary(analysis)
     sections = set(show)
     if "all" in sections:
-        sections = {"deps", "units", "endpoints"}
+        sections = {"deps", "units", "endpoints", "tables"}
     if "deps" in sections:
         _render_dependencies(analysis)
     if "units" in sections:
         _render_units(analysis)
     if "endpoints" in sections:
         _render_endpoints(analysis)
+    if "tables" in sections:
+        _render_tables(analysis)
     if json_out:
         json_out.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
         console.print(f"[green]Analysis written to {json_out}[/green]")

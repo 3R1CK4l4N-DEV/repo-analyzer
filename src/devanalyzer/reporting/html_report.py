@@ -205,6 +205,10 @@ def render_markdown(
         from devanalyzer.obsidian.mermaid import class_diagram
 
         lines += ["## Architecture", "", class_diagram(types, graph, title=analysis.project_name), ""]
+    if analysis.db_schema.tables:
+        from devanalyzer.obsidian.mermaid import er_diagram
+
+        lines += ["## Data model", "", er_diagram(analysis.db_schema) or "", ""]
     if analysis.endpoints:
         lines += (
             ["## Endpoints", "", "| Method | Path | Handler |", "|---|---|---|"]

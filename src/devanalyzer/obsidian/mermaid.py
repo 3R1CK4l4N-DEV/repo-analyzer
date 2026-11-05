@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from devanalyzer.core.models import CodeUnit, CodeUnitKind, Endpoint, RelationKind
+from devanalyzer.core.models import CodeUnit, CodeUnitKind, Endpoint, RelationKind, SchemaInfo
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 
 STEREOTYPE_STYLE = {
@@ -63,6 +63,30 @@ def class_diagram(types: list[CodeUnit], graph: KnowledgeGraph, title: str | Non
     for u in chosen:
         if u.stereotype in STEREOTYPE_STYLE:
             lines.append(f"    style {_mid(u.fqn)} {STEREOTYPE_STYLE[u.stereotype]}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def er_diagram(schema: SchemaInfo, max_tables: int = 60) -> str | None:
+    """erDiagram with columns and FK relationships."""
+    if not schema.tables:
+        return None
+    lines = ["```mermaid", "erDiagram"]
+    tables = schema.tables[:max_tables]
+    names = {t.name for t in tables}
+    for t in tables:
+        lines.append(f"    {_mid(t.name)} {{")
+        for c in t.columns[:14]:
+            flags = " PK" if c.primary_key else (" FK" if any(fk.column == c.name for fk in t.foreign_keys) else "")
+            ctype = re.sub(r"[^A-Za-z0-9_]", "_", (c.type or "unknown").split("(")[0].strip()) or "unknown"
+            lines.append(f"        {ctype} {_mid(c.name)}{flags}")
+        if len(t.columns) > 14:
+            lines.append(f"        more _{len(t.columns) - 14}_columns")
+        lines.append("    }")
+    for t in tables:
+        for fk in t.foreign_keys:
+            if fk.ref_table in names:
+                lines.append(f'    {_mid(fk.ref_table)} ||--o{{ {_mid(t.name)} : "{fk.column}"')
     lines.append("```")
     return "\n".join(lines)
 

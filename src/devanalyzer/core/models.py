@@ -144,12 +144,49 @@ class RelationKind(str, Enum):
     CALLS = "calls"
     EXPOSES = "exposes"
     USES_DEPENDENCY = "uses_dependency"
+    REFERENCES = "references"
+    MAPS_TO = "maps_to"
 
 
 class Relation(BaseModel):
     source: str
     target: str
     kind: RelationKind
+
+
+class Column(BaseModel):
+    name: str
+    type: str | None = None
+    nullable: bool = True
+    primary_key: bool = False
+
+
+class ForeignKey(BaseModel):
+    column: str
+    ref_table: str
+    ref_column: str | None = None
+
+
+class Table(BaseModel):
+    name: str
+    columns: list[Column] = Field(default_factory=list)
+    foreign_keys: list[ForeignKey] = Field(default_factory=list)
+    source_file: str
+    line: int = 1
+    tool: str = "sql"  # sql | flyway | liquibase | alembic | typeorm | prisma
+    mapped_entities: list[str] = Field(default_factory=list)  # FQNs of ORM entities persisted here
+
+    def column(self, name: str) -> Column | None:
+        return next((c for c in self.columns if c.name.lower() == name.lower()), None)
+
+
+class SchemaInfo(BaseModel):
+    tables: list[Table] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+
+    def table(self, name: str) -> Table | None:
+        key = name.lower().strip('"`[]')
+        return next((t for t in self.tables if t.name.lower() == key), None)
 
 
 class Evidence(BaseModel):
@@ -241,6 +278,7 @@ class ProjectAnalysis(BaseModel):
     languages: list[LanguageAnalysis] = Field(default_factory=list)
     builds: list[BuildInfo] = Field(default_factory=list)
     metrics: ProjectMetrics = Field(default_factory=ProjectMetrics)
+    db_schema: SchemaInfo = Field(default_factory=SchemaInfo)
 
     @property
     def build_systems(self) -> list[BuildSystem]:

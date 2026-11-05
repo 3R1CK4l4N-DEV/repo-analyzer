@@ -45,6 +45,9 @@ SUPPORTED_EXTENSIONS = {
     ".cfg",
     ".ini",
     ".txt",
+    # Data / migrations
+    ".sql",
+    ".prisma",
     # Common
     ".yml",
     ".yaml",

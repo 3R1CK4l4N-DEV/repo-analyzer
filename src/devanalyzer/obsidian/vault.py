@@ -9,7 +9,7 @@ from pathlib import Path
 
 from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind, RuleGroup
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
-from devanalyzer.obsidian.mermaid import class_diagram, sequence_diagram
+from devanalyzer.obsidian.mermaid import class_diagram, er_diagram, sequence_diagram
 
 GENERATED_START = "<!-- devanalyzer:generated:start -->"
 GENERATED_END = "<!-- devanalyzer:generated:end -->"
@@ -26,6 +26,7 @@ FOLDERS = {
     "glossary": "40 Glossary",
     "decisions": "50 Decisions",
     "domains": "35 Domains",
+    "data": "60 Data",
     "canvas": "canvas",
 }
 
@@ -115,6 +116,10 @@ class ObsidianVault:
             self._write(FOLDERS["modules"], build.project_name or build.manifest_path.replace("/", "_"), self._module_note(build, analysis))
         for g in self._groups_module.values():
             self._write(FOLDERS["domains"], g.key, self._domain_note(g))
+        for table in analysis.db_schema.tables:
+            self._write(FOLDERS["data"], table.name, self._table_note(table, analysis))
+        if analysis.db_schema.tables:
+            self._write(FOLDERS["moc"], "Data Model", self._moc_data(analysis))
 
         self._write(FOLDERS["moc"], "Architecture", self._moc_architecture(analysis, types, graph))
         self._write(FOLDERS["moc"], "Business Rules", self._moc_rules(rules, groups or []))
@@ -195,6 +200,9 @@ class ObsidianVault:
             )
         if rules:
             lines += ["## Business rules", ""] + [f"- {self._link_rule(r)} ({r.status.value}, {r.confidence:.0%})" for r in rules] + [""]
+        tables = [t for t in analysis.db_schema.tables if unit.fqn in t.mapped_entities]
+        if tables:
+            lines += ["## Persistence", ""] + [f"- Table [[{safe_name(t.name)}]] ({len(t.columns)} columns)" for t in tables] + [""]
         nested = [c for c in unit.children if c.kind in TYPE_KINDS]
         if nested:
             lines += ["## Nested types", ""] + [f"- [[{safe_name(c.name)}]]" for c in nested] + [""]
@@ -293,6 +301,45 @@ class ObsidianVault:
                 + [""]
             )
         lines += ["## Rules in this module", ""] + [f"- {self._link_rule(self._rules_by_id[i])}" for i in g.rule_ids if i in self._rules_by_id] + [""]
+        return fm, "\n".join(lines)
+
+    def _table_note(self, table, analysis: ProjectAnalysis) -> tuple[dict, str]:
+        fm = {
+            "type": "table",
+            "table": table.name,
+            "tool": table.tool,
+            "file": table.source_file,
+            "columns": len(table.columns),
+            "tags": ["devanalyzer", "table"],
+        }
+        lines = [f"# {table.name}", "", f"**Source:** `{table.source_file}:{table.line}` ({table.tool})", ""]
+        if table.mapped_entities:
+            lines += ["**Persisted entities:** " + ", ".join(self._link_fqn(e) if not e.startswith("prisma.") else f"`{e}`" for e in table.mapped_entities), ""]
+        lines += ["## Columns", "", "| Column | Type | Nullable | Key |", "|---|---|---|---|"]
+        fk_cols = {fk.column: fk for fk in table.foreign_keys}
+        for c in table.columns:
+            key = "PK" if c.primary_key else (f"FK → [[{safe_name(fk_cols[c.name].ref_table)}]]" if c.name in fk_cols else "")
+            lines.append(f"| `{c.name}` | {c.type or ''} | {'yes' if c.nullable else 'no'} | {key} |")
+        lines.append("")
+        incoming = [(t, fk) for t in analysis.db_schema.tables for fk in t.foreign_keys if fk.ref_table == table.name]
+        if incoming:
+            lines += ["## Referenced by", ""] + [f"- [[{safe_name(t.name)}]] via `{fk.column}`" for t, fk in incoming] + [""]
+        return fm, "\n".join(lines)
+
+    def _moc_data(self, analysis: ProjectAnalysis) -> tuple[dict, str]:
+        fm = {"type": "moc", "tags": ["devanalyzer", "moc"]}
+        lines = ["# Data Model", "", f"{len(analysis.db_schema.tables)} tables from: " + ", ".join(f"`{s}`" for s in analysis.db_schema.sources[:10]), ""]
+        if diagram := er_diagram(analysis.db_schema):
+            lines += ["## ER diagram", "", diagram, ""]
+        lines += (
+            ["## Tables", ""]
+            + [
+                f"- [[{safe_name(t.name)}]] ({len(t.columns)} cols)"
+                + (" ← " + ", ".join(self._link_fqn(e) for e in t.mapped_entities if not e.startswith("prisma.")) if t.mapped_entities else "")
+                for t in analysis.db_schema.tables
+            ]
+            + [""]
+        )
         return fm, "\n".join(lines)
 
     def _link_rule_short(self, rule_id: str) -> str:
@@ -408,6 +455,7 @@ class ObsidianVault:
             "- [[Architecture]]",
             "- [[Business Rules]]",
             "- [[Glossary]]",
+            *(["- [[Data Model]]"] if analysis.db_schema.tables else []),
             "",
             "## Stats",
             "",

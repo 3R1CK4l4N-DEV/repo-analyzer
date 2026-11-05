@@ -195,6 +195,12 @@ def create_server(project: Path, name: str = "devanalyzer"):
         return _dump(deps)
 
     @mcp.tool()
+    def list_tables(name: str | None = None) -> str:
+        """Database tables reconstructed from migrations/schema files, with columns, foreign keys and the ORM entities mapped to them."""
+        tables = [t for t in ctx.analysis.db_schema.tables if not name or name.lower() in t.name.lower()]
+        return _dump({"sources": ctx.analysis.db_schema.sources, "tables": [t.model_dump() for t in tables]})
+
+    @mcp.tool()
     def get_business_rules(status: str | None = None, category: str | None = None, unit: str | None = None, search: str | None = None) -> str:
         """AI-inferred business rules with evidence. Filters: status (inferred|confirmed|rejected), category, unit (substring of FQN), search (free text)."""
         if not (ctx.out_dir / "kb.sqlite").is_file():

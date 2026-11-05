@@ -75,6 +75,28 @@ class KnowledgeGraph:
                     continue
                 if rel.source in g and rel.target in g:
                     kg._edge(rel.source, rel.target, rel.kind)
+
+        for table in analysis.db_schema.tables:
+            tid = f"table:{table.name}"
+            g.add_node(
+                tid,
+                kind="table",
+                name=table.name,
+                file=table.source_file,
+                line=table.line,
+                tool=table.tool,
+                columns=len(table.columns),
+                primary_key=",".join(c.name for c in table.columns if c.primary_key),
+            )
+            kg._edge(project_id, tid, RelationKind.CONTAINS)
+            for entity in table.mapped_entities:
+                if entity in g:
+                    kg._edge(entity, tid, RelationKind.MAPS_TO)
+        for table in analysis.db_schema.tables:
+            for fk in table.foreign_keys:
+                target = f"table:{fk.ref_table}"
+                if target in g:
+                    kg._edge(f"table:{table.name}", target, RelationKind.REFERENCES, column=fk.column)
         return kg
 
     def _package_node(self, package: str | None, project_id: str, language: str) -> str:

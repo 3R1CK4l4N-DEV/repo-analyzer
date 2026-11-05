@@ -1,0 +1,21 @@
+databaseChangeLog:
+  - changeSet:
+      id: 2
+      author: dev
+      changes:
+        - createTable:
+            tableName: warehouses
+            columns:
+              - column:
+                  name: id
+                  type: bigint
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: product_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+                    references: products(id)
+        - dropTable:
+            tableName: obsolete

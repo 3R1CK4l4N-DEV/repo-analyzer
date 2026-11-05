@@ -7,6 +7,7 @@ from devanalyzer.core.build_detectors import detect_builds
 from devanalyzer.core.models import ProjectAnalysis, ProjectMetrics
 from devanalyzer.core.plugin import PluginRegistry, default_registry
 from devanalyzer.core.reader import ProjectReader
+from devanalyzer.core.schema import detect_schema, map_entities
 
 DETECTION_THRESHOLD = 0.05
 
@@ -29,6 +30,9 @@ class ProjectAnalyzer:
         )
         for plugin, _score in self.registry.detect_all(files, threshold=DETECTION_THRESHOLD):
             analysis.languages.append(plugin.analyze(files, builds, self.settings))
+
+        analysis.db_schema = detect_schema(files)
+        map_entities(analysis.db_schema, analysis.units)
 
         stereotypes: dict[str, int] = {}
         units_by_kind: dict[str, int] = {}

@@ -1,0 +1,14 @@
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog">
+  <changeSet id="1" author="dev">
+    <createTable tableName="products">
+      <column name="id" type="bigint"><constraints primaryKey="true" nullable="false"/></column>
+      <column name="sku" type="varchar(40)"><constraints nullable="false"/></column>
+    </createTable>
+    <createTable tableName="stock_movements">
+      <column name="id" type="bigint"><constraints primaryKey="true"/></column>
+      <column name="product_id" type="bigint"><constraints nullable="false" references="products(id)"/></column>
+      <column name="delta" type="int"/>
+    </createTable>
+    <addForeignKeyConstraint baseTableName="stock_movements" baseColumnNames="product_id" referencedTableName="products" referencedColumnNames="id" constraintName="fk_sm_product"/>
+  </changeSet>
+</databaseChangeLog>
