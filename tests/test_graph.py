@@ -28,6 +28,19 @@ def test_queries(spring_analysis):
     assert "endpoint:GET /accounts" in sub.g
 
 
+def test_graphml_is_readable_by_networkx(spring_analysis, tmp_path):
+    import networkx as nx
+
+    kg = KnowledgeGraph.from_analysis(spring_analysis)
+    paths = kg.save(tmp_path)
+    g = nx.read_graphml(paths["graphml"])
+    assert g.number_of_nodes() == kg.g.number_of_nodes()
+    assert g.number_of_edges() == kg.g.number_of_edges()
+    node = g.nodes["com.acme.bank.service.AccountService"]
+    assert node["stereotype"] == "service" and node["kind"] == "class" and int(node["line"]) == 11
+    assert {d["kind"] for _, _, d in g.edges(data=True)} >= {"contains", "depends_on", "exposes"}
+
+
 def test_save_and_load_roundtrip(spring_analysis, tmp_path):
     kg = KnowledgeGraph.from_analysis(spring_analysis)
     paths = kg.save(tmp_path)

@@ -133,12 +133,13 @@ def _default_out(path: Path) -> Path:
 def graph_build(
     path: Path = typer.Argument(..., exists=True, help="Project root"),
     out: Path | None = typer.Option(None, "--out", "-o", help="Output directory (default: <project>/.devanalyzer)"),
+    no_graphml: bool = typer.Option(False, "--no-graphml", help="Skip the GraphML export (faster on very large projects)"),
 ):
     """Analyze a project and persist its knowledge graph (JSON + GraphML)."""
     analysis = ProjectAnalyzer().run(path)
     kg = KnowledgeGraph.from_analysis(analysis)
     out_dir = out or _default_out(path.resolve())
-    paths = kg.save(out_dir)
+    paths = kg.save(out_dir, graphml=not no_graphml)
     (out_dir / "analysis.json").write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
     console.print(json.dumps(kg.stats(), indent=2))
     for fmt, p in paths.items():

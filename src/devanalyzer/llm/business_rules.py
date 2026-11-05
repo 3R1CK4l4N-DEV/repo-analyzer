@@ -186,11 +186,16 @@ class BusinessRuleExtractor:
             output_language=self.output_language,
         )
 
-    @staticmethod
-    def _slice(path: Path, start: int, end: int, numbered: bool = True) -> str:
-        if not path.is_file():
+    def _lines(self, path: Path) -> list[str]:
+        cache = self.__dict__.setdefault("_line_cache", {})
+        if path not in cache:
+            cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+        return cache[path]
+
+    def _slice(self, path: Path, start: int, end: int, numbered: bool = True) -> str:
+        lines = self._lines(path)
+        if not lines:
             return ""
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         chunk = lines[max(0, start - 1) : end]
         if numbered:
             return "\n".join(f"{start + i:>5}| {ln}" for i, ln in enumerate(chunk))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -53,6 +54,11 @@ class ObsidianVault:
         self.root = Path(vault_dir)
         self.base = self.root / project_folder if project_folder else self.root
         self.written: list[Path] = []
+        self._endpoints_by_owner: dict[str, list] = defaultdict(list)
+        self._language_by_fqn: dict[str, str] = {}
+        self._ensured_dirs: set[Path] = set()
+        self._pending: list[tuple[Path, str]] = []
+        self._generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     # ------------------------------------------------------------ public
     def generate(
@@ -75,6 +81,12 @@ class ObsidianVault:
         for r in rules:
             for t in r.domain_terms:
                 rules_by_term[t].append(r)
+        # Pre-index once; per-note scans over all endpoints/types made generation O(N^2).
+        self._endpoints_by_owner = defaultdict(list)
+        for ep in analysis.endpoints:
+            self._endpoints_by_owner[ep.handler.rpartition(".")[0]].append(ep)
+        self._language_by_fqn = {t.fqn: (t.language.value if t.language else "") for t in types}
+        self._ensured_dirs: set[Path] = set()
 
         for unit in types:
             self._write(FOLDERS["classes"], unit.name, self._class_note(unit, analysis, graph, rules_by_unit.get(unit.fqn, [])))
@@ -94,6 +106,7 @@ class ObsidianVault:
         self._write(FOLDERS["moc"], "Glossary", self._moc_glossary(glossary))
         self._write("", f"{analysis.project_name} - Home", self._home(analysis, types, rules, glossary))
         self._write_canvas(analysis, types, graph)
+        self._flush()
         return self.written
 
     # ------------------------------------------------------------ notes
@@ -151,7 +164,7 @@ class ObsidianVault:
         fields = [c for c in unit.children if c.kind == CodeUnitKind.FIELD]
         if fields:
             lines += ["## Fields", ""] + [f"- `{f.type or ''} {f.name}`" + (f" {' '.join('@' + a.name for a in f.annotations)}" if f.annotations else "") for f in fields] + [""]
-        eps = [e for e in analysis.endpoints if e.handler.rpartition(".")[0] == unit.fqn]
+        eps = self._endpoints_by_owner.get(unit.fqn, [])
         if eps:
             lines += ["## Endpoints", ""] + [f"- [[{safe_name(f'{e.http_method} {e.path}')}|{e.http_method} {e.path}]] → `{e.handler.rsplit('.', 1)[-1]}`" for e in eps] + [""]
         if rules:
@@ -183,7 +196,7 @@ class ObsidianVault:
         for e in r.evidence:
             lines.append(f"- {self._link_fqn(e.unit) if e.unit else ''} `{e.file}:{e.line_start}-{e.line_end}`")
             if e.snippet:
-                lang = (r.source_unit and next((u.language.value for u in self._iter_types(analysis.units) if u.fqn == r.source_unit and u.language), "")) or ""
+                lang = self._language_by_fqn.get(r.source_unit or "", "")
                 lines += ["", f"```{lang}", e.snippet, "```", ""]
         lines += ["", f"*Inferred by `{r.model or 'llm'}` with confidence {r.confidence:.0%}. Review with* `devanalyzer rules review <project> {r.id} --status confirmed|rejected`"]
         return fm, "\n".join(lines)
@@ -306,21 +319,34 @@ class ObsidianVault:
         return f"[[{safe_name(f'{r.id} {r.statement[:60]}')}|{r.id}]] {r.statement}"
 
     def _write(self, folder: str, title: str, content: tuple[dict, str]) -> Path:
+        """Queue a note; actual disk I/O happens in parallel in `_flush` (Windows file I/O dominates otherwise)."""
         fm, body = content
-        fm = {**fm, "generated_by": "devanalyzer", "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        fm = {**fm, "generated_by": "devanalyzer", "generated_at": self._generated_at}
         folder_path = self.base / folder if folder else self.base
-        folder_path.mkdir(parents=True, exist_ok=True)
+        if folder_path not in self._ensured_dirs:
+            folder_path.mkdir(parents=True, exist_ok=True)
+            self._ensured_dirs.add(folder_path)
         path = folder_path / f"{safe_name(title)}.md"
-        generated = f"{GENERATED_START}\n{body.rstrip()}\n{GENERATED_END}"
-        if path.exists():
-            existing = path.read_text(encoding="utf-8")
-            manual = self._manual_part(existing)
-            new_text = frontmatter(fm) + generated + manual
-        else:
-            new_text = frontmatter(fm) + generated + MANUAL_HINT
-        path.write_text(new_text, encoding="utf-8")
+        self._pending.append((path, frontmatter(fm) + f"{GENERATED_START}\n{body.rstrip()}\n{GENERATED_END}"))
         self.written.append(path)
         return path
+
+    def _flush(self) -> None:
+        def write_one(item: tuple[Path, str]) -> None:
+            path, generated = item
+            try:
+                manual = self._manual_part(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                manual = MANUAL_HINT
+            path.write_text(generated + manual, encoding="utf-8")
+
+        pending, self._pending = self._pending, []
+        if len(pending) < 64:
+            for item in pending:
+                write_one(item)
+            return
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(write_one, pending))
 
     @staticmethod
     def _manual_part(existing: str) -> str:
