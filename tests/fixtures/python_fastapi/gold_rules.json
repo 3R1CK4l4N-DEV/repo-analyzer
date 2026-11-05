@@ -1,0 +1,32 @@
+{
+  "rules": [
+    {
+      "id": "G1",
+      "statement": "A single stock adjustment cannot exceed 1000 units in absolute value",
+      "file": "app/inventory/service.py",
+      "line_start": 13,
+      "line_end": 16,
+      "keywords": ["1000", "adjust"],
+      "category": "validation"
+    },
+    {
+      "id": "G2",
+      "statement": "Stock can never go negative",
+      "file": "app/inventory/service.py",
+      "line_start": 20,
+      "line_end": 21,
+      "keywords": ["negativ", "stock"],
+      "category": "validation"
+    },
+    {
+      "id": "G3",
+      "statement": "A product needs reorder when its quantity is at or below its reorder level",
+      "file": "app/inventory/service.py",
+      "line_start": 25,
+      "line_end": 27,
+      "keywords": ["reorder"],
+      "category": "policy"
+    }
+  ],
+  "not_rules": []
+}

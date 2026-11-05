@@ -298,6 +298,52 @@ def rules_review(
     console.print("[green]updated[/green]" if ok else f"[red]rule {rule_id} not found[/red]")
 
 
+@rules_app.command("eval")
+def rules_eval(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    gold: Path | None = typer.Option(None, "--gold", "-g", help="Gold file (default: <project>/.devanalyzer/gold_rules.json)"),
+    source: Path | None = typer.Option(None, "--source", help="rules.json to evaluate (default: knowledge base)"),
+    include_rejected: bool = typer.Option(False, "--include-rejected", help="Count rejected rules as predictions too"),
+    json_out: Path | None = typer.Option(None, "--json"),
+):
+    """Measure precision/recall of extracted rules against a hand-labelled gold set (no LLM involved)."""
+    from devanalyzer.core.models import RuleExtractionResult
+    from devanalyzer.llm.evaluation import GoldSet, evaluate
+
+    gold_path = gold or (_default_out(path.resolve()) / "gold_rules.json")
+    if not gold_path.is_file():
+        console.print(f"[red]No gold file at {gold_path}. See src/devanalyzer/llm/evaluation.py for the format.[/red]")
+        raise typer.Exit(1)
+    gold_set = GoldSet.load(gold_path)
+    if source:
+        result = RuleExtractionResult.model_validate_json(source.read_text(encoding="utf-8"))
+        rules, model = result.rules, result.model
+    else:
+        from devanalyzer.kb.store import KnowledgeBase
+
+        with KnowledgeBase(_kb_path(path)) as kb:
+            rules = kb.rules()
+        model = next((r.model for r in rules if r.model), "?")
+    report = evaluate(rules, gold_set, model=model or "?", include_rejected=include_rejected)
+    console.rule(f"[bold]eval · {report.model}[/bold]")
+    console.print(report.summary_line())
+    if report.category_accuracy is not None:
+        console.print(f"Category accuracy on matches: {report.category_accuracy:.0%}")
+    if report.matches:
+        t = Table(title="Matches")
+        t.add_column("Gold"), t.add_column("Rule"), t.add_column("Score"), t.add_column("Statement")
+        for m in report.matches:
+            t.add_row(m.gold_id, m.rule_id, f"{m.score:.2f}", m.statement[:90])
+        console.print(t)
+    for title, items, color in (("Missed (false negatives)", report.missed, "yellow"), ("Spurious (false positives)", report.spurious, "red")):
+        if items:
+            console.print(f"[{color}]{title}:[/{color}]")
+            for i in items:
+                console.print(f"  - {i[:120]}")
+    if json_out:
+        json_out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+
 @rules_app.command("glossary")
 def rules_glossary(path: Path = typer.Argument(..., exists=True), search: str | None = typer.Option(None, "-q")):
     """Show the domain glossary inferred from the code."""

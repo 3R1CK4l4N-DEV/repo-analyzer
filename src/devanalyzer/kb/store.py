@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS rules (
     first_seen_run INTEGER,
     last_seen_run INTEGER,
     review_note TEXT,
+    reviewed_by TEXT,
     content_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS rule_history (
@@ -76,6 +77,16 @@ class KnowledgeBase:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(rules)")}
+        if "reviewed_by" not in cols:
+            self.conn.execute("ALTER TABLE rules ADD COLUMN reviewed_by TEXT")
+            # Rules with a review note were set by a person; other non-inferred ones came from the verifier.
+            self.conn.execute("UPDATE rules SET reviewed_by='human' WHERE review_note IS NOT NULL")
+            self.conn.execute("UPDATE rules SET reviewed_by='verifier' WHERE reviewed_by IS NULL AND status != 'inferred'")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -158,9 +169,11 @@ class KnowledgeBase:
                 rule.id,
             ),
         )
-        # Automated verdicts may only override rules nobody has reviewed yet.
-        if existing["status"] == RuleStatus.INFERRED.value and rule.status != RuleStatus.INFERRED:
-            cur.execute("UPDATE rules SET status=? WHERE id=?", (rule.status.value, rule.id))
+        # Automated verdicts (verifier) may override earlier automated verdicts, never a human decision.
+        if existing["reviewed_by"] != "human":
+            cur.execute(
+                "UPDATE rules SET status=?, reviewed_by=? WHERE id=?", (rule.status.value, "verifier" if rule.status != RuleStatus.INFERRED else None, rule.id)
+            )
         if change == "changed":
             cur.execute(
                 "INSERT INTO rule_history (rule_id, run_id, change, previous) VALUES (?, ?, 'changed', ?)",
@@ -224,7 +237,9 @@ class KnowledgeBase:
         return self._row_to_rule(row) if row else None
 
     def set_status(self, rule_id: str, status: RuleStatus, note: str | None = None) -> bool:
-        cur = self.conn.execute("UPDATE rules SET status=?, review_note=COALESCE(?, review_note) WHERE id=?", (status.value, note, rule_id))
+        cur = self.conn.execute(
+            "UPDATE rules SET status=?, review_note=COALESCE(?, review_note), reviewed_by='human' WHERE id=?", (status.value, note, rule_id)
+        )
         self.conn.commit()
         return cur.rowcount > 0
 

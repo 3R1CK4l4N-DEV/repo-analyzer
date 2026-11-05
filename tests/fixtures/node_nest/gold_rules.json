@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "id": "G1",
+      "statement": "An order total must be positive",
+      "file": "src/orders/order.service.ts",
+      "line_start": 23,
+      "line_end": 26,
+      "keywords": ["total", "positiv"],
+      "category": "validation"
+    },
+    {
+      "id": "G2",
+      "statement": "Orders above 5000 require manual approval (PENDING_APPROVAL), otherwise they are confirmed",
+      "file": "src/orders/order.service.ts",
+      "line_start": 27,
+      "line_end": 30,
+      "keywords": ["5000", "approv"],
+      "category": "policy"
+    }
+  ],
+  "not_rules": []
+}

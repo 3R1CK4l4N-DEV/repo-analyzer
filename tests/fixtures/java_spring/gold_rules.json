@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "id": "G1",
+      "statement": "A single deposit must be positive and cannot exceed 10,000",
+      "file": "src/main/java/com/acme/bank/service/AccountService.java",
+      "line_start": 33,
+      "line_end": 37,
+      "keywords": ["deposit", "10"],
+      "category": "validation"
+    },
+    {
+      "id": "G2",
+      "statement": "An account can only be closed when its balance is zero",
+      "file": "src/main/java/com/acme/bank/service/AccountService.java",
+      "line_start": 43,
+      "line_end": 48,
+      "keywords": ["clos", "balance"],
+      "category": "state_transition"
+    }
+  ],
+  "not_rules": []
+}
