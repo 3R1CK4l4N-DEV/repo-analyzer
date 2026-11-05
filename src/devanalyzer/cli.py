@@ -414,7 +414,7 @@ def serve(
         from devanalyzer.mcp_server.server import run
     except ImportError:
         console.print("[red]Install the optional dependency: pip install 'devanalyzer[mcp]'[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     run(path, transport="sse" if sse else "stdio", host=host, port=port)
 
 

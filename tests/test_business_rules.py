@@ -40,7 +40,7 @@ class FakeProvider(LLMProvider):
                     "glossary": [{"term": "Account", "definition": "A customer's bank account holding a balance."}],
                 }
             )
-        return "```json\n{\"rules\": [], \"glossary\": []}\n```"
+        return '```json\n{"rules": [], "glossary": []}\n```'
 
 
 def test_parse_llm_json_tolerates_fences_and_prose():

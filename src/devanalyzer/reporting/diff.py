@@ -71,8 +71,12 @@ def diff_analyses(before: ProjectAnalysis, after: ProjectAnalysis) -> AnalysisDi
         endpoints_removed=sorted(e_before - e_after),
         dependencies_added=sorted(f"{n} {d_after[n] or 'managed'}" for n in set(d_after) - set(d_before)),
         dependencies_removed=sorted(set(d_before) - set(d_after)),
-        dependencies_changed=sorted(f"{n}: {d_before[n] or 'managed'} -> {d_after[n] or 'managed'}" for n in set(d_before) & set(d_after) if d_before[n] != d_after[n]),
-        versions_changed=sorted(f"{k}: {v_before.get(k, '-')} -> {v_after.get(k, '-')}" for k in set(v_before) | set(v_after) if v_before.get(k) != v_after.get(k)),
+        dependencies_changed=sorted(
+            f"{n}: {d_before[n] or 'managed'} -> {d_after[n] or 'managed'}" for n in set(d_before) & set(d_after) if d_before[n] != d_after[n]
+        ),
+        versions_changed=sorted(
+            f"{k}: {v_before.get(k, '-')} -> {v_after.get(k, '-')}" for k in set(v_before) | set(v_after) if v_before.get(k) != v_after.get(k)
+        ),
         relations_added=len(r_after - r_before),
         relations_removed=len(r_before - r_after),
         loc_before=before.metrics.loc,
@@ -85,11 +89,16 @@ def render_diff_markdown(diff: AnalysisDiff) -> str:
         return "No structural changes detected."
     lines = ["# Analysis diff", "", f"LOC: {diff.loc_before} -> {diff.loc_after}", f"Relations: +{diff.relations_added} / -{diff.relations_removed}", ""]
     sections = [
-        ("Types added", diff.units_added), ("Types removed", diff.units_removed),
-        ("Methods added", diff.methods_added), ("Methods removed", diff.methods_removed),
-        ("Endpoints added", diff.endpoints_added), ("Endpoints removed", diff.endpoints_removed),
-        ("Dependencies added", diff.dependencies_added), ("Dependencies removed", diff.dependencies_removed),
-        ("Dependencies changed", diff.dependencies_changed), ("Versions changed", diff.versions_changed),
+        ("Types added", diff.units_added),
+        ("Types removed", diff.units_removed),
+        ("Methods added", diff.methods_added),
+        ("Methods removed", diff.methods_removed),
+        ("Endpoints added", diff.endpoints_added),
+        ("Endpoints removed", diff.endpoints_removed),
+        ("Dependencies added", diff.dependencies_added),
+        ("Dependencies removed", diff.dependencies_removed),
+        ("Dependencies changed", diff.dependencies_changed),
+        ("Versions changed", diff.versions_changed),
     ]
     for title, items in sections:
         if items:

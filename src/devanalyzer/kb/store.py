@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_rules_unit ON rules(source_unit);
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class KnowledgeBase:
@@ -119,8 +119,21 @@ class KnowledgeBase:
                    tags, domain_terms, evidence, first_seen_run, last_seen_run, content_hash)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    rule.id, project, rule.statement, rule.rationale, rule.category, rule.confidence, rule.status.value,
-                    rule.source_unit, rule.model, tags, terms, evidence, run_id, run_id, content_hash,
+                    rule.id,
+                    project,
+                    rule.statement,
+                    rule.rationale,
+                    rule.category,
+                    rule.confidence,
+                    rule.status.value,
+                    rule.source_unit,
+                    rule.model,
+                    tags,
+                    terms,
+                    evidence,
+                    run_id,
+                    run_id,
+                    content_hash,
                 ),
             )
             cur.execute("INSERT INTO rule_history (rule_id, run_id, change) VALUES (?, ?, 'new')", (rule.id, run_id))
@@ -131,8 +144,18 @@ class KnowledgeBase:
             """UPDATE rules SET statement=?, rationale=?, category=?, confidence=?, source_unit=?, model=?,
                tags=?, domain_terms=?, evidence=?, last_seen_run=?, content_hash=? WHERE id=?""",
             (
-                rule.statement, rule.rationale, rule.category, rule.confidence, rule.source_unit, rule.model,
-                tags, terms, evidence, run_id, content_hash, rule.id,
+                rule.statement,
+                rule.rationale,
+                rule.category,
+                rule.confidence,
+                rule.source_unit,
+                rule.model,
+                tags,
+                terms,
+                evidence,
+                run_id,
+                content_hash,
+                rule.id,
             ),
         )
         # Automated verdicts may only override rules nobody has reviewed yet.
@@ -215,8 +238,11 @@ class KnowledgeBase:
         rows = self.conn.execute(f"SELECT * FROM terms {where} ORDER BY term COLLATE NOCASE", params).fetchall()
         return [
             GlossaryTerm(
-                term=r["term"], definition=r["definition"] or "", aliases=json.loads(r["aliases"] or "[]"),
-                related_units=json.loads(r["related_units"] or "[]"), rules=json.loads(r["rules"] or "[]"),
+                term=r["term"],
+                definition=r["definition"] or "",
+                aliases=json.loads(r["aliases"] or "[]"),
+                related_units=json.loads(r["related_units"] or "[]"),
+                rules=json.loads(r["rules"] or "[]"),
             )
             for r in rows
         ]
@@ -250,8 +276,15 @@ class KnowledgeBase:
         from devanalyzer.core.models import Evidence
 
         return BusinessRule(
-            id=r["id"], statement=r["statement"], rationale=r["rationale"], category=r["category"] or "general",
-            domain_terms=json.loads(r["domain_terms"] or "[]"), evidence=[Evidence(**e) for e in json.loads(r["evidence"] or "[]")],
-            confidence=r["confidence"] or 0.0, status=RuleStatus(r["status"]), tags=json.loads(r["tags"] or "[]"),
-            source_unit=r["source_unit"], model=r["model"],
+            id=r["id"],
+            statement=r["statement"],
+            rationale=r["rationale"],
+            category=r["category"] or "general",
+            domain_terms=json.loads(r["domain_terms"] or "[]"),
+            evidence=[Evidence(**e) for e in json.loads(r["evidence"] or "[]")],
+            confidence=r["confidence"] or 0.0,
+            status=RuleStatus(r["status"]),
+            tags=json.loads(r["tags"] or "[]"),
+            source_unit=r["source_unit"],
+            model=r["model"],
         )

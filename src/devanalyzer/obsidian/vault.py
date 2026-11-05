@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 
 from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind
@@ -58,7 +58,7 @@ class ObsidianVault:
         self._language_by_fqn: dict[str, str] = {}
         self._ensured_dirs: set[Path] = set()
         self._pending: list[tuple[Path, str]] = []
-        self._generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._generated_at = datetime.now(UTC).isoformat(timespec="seconds")
 
     # ------------------------------------------------------------ public
     def generate(
@@ -124,8 +124,11 @@ class ObsidianVault:
         lines = [f"# {unit.name}", ""]
         if unit.docstring:
             lines += ["> " + unit.docstring.replace("\n", "\n> "), ""]
-        lines += [f"**Kind:** {unit.kind.value}" + (f" · **Stereotype:** {unit.stereotype}" if unit.stereotype else ""),
-                  f"**Source:** `{unit.file}:{unit.line_start}`", ""]
+        lines += [
+            f"**Kind:** {unit.kind.value}" + (f" · **Stereotype:** {unit.stereotype}" if unit.stereotype else ""),
+            f"**Source:** `{unit.file}:{unit.line_start}`",
+            "",
+        ]
         if unit.extends or unit.implements:
             lines.append("## Hierarchy")
             lines += [f"- extends {self._link_fqn(t)}" for t in unit.extends]
@@ -163,10 +166,18 @@ class ObsidianVault:
             lines.append("")
         fields = [c for c in unit.children if c.kind == CodeUnitKind.FIELD]
         if fields:
-            lines += ["## Fields", ""] + [f"- `{f.type or ''} {f.name}`" + (f" {' '.join('@' + a.name for a in f.annotations)}" if f.annotations else "") for f in fields] + [""]
+            lines += (
+                ["## Fields", ""]
+                + [f"- `{f.type or ''} {f.name}`" + (f" {' '.join('@' + a.name for a in f.annotations)}" if f.annotations else "") for f in fields]
+                + [""]
+            )
         eps = self._endpoints_by_owner.get(unit.fqn, [])
         if eps:
-            lines += ["## Endpoints", ""] + [f"- [[{safe_name(f'{e.http_method} {e.path}')}|{e.http_method} {e.path}]] → `{e.handler.rsplit('.', 1)[-1]}`" for e in eps] + [""]
+            lines += (
+                ["## Endpoints", ""]
+                + [f"- [[{safe_name(f'{e.http_method} {e.path}')}|{e.http_method} {e.path}]] → `{e.handler.rsplit('.', 1)[-1]}`" for e in eps]
+                + [""]
+            )
         if rules:
             lines += ["## Business rules", ""] + [f"- {self._link_rule(r)} ({r.status.value}, {r.confidence:.0%})" for r in rules] + [""]
         nested = [c for c in unit.children if c.kind in TYPE_KINDS]
@@ -176,18 +187,45 @@ class ObsidianVault:
 
     def _endpoint_note(self, ep, analysis: ProjectAnalysis) -> tuple[dict, str]:
         owner = ep.handler.rpartition(".")[0]
-        fm = {"type": "endpoint", "http_method": ep.http_method, "path": ep.path, "handler": ep.handler, "file": ep.file, "line": ep.line,
-              "framework": ep.framework or "", "tags": ["devanalyzer", "endpoint", f"http/{ep.http_method.lower()}"]}
-        body = [f"# {ep.http_method} {ep.path}", "", f"**Handler:** {self._link_fqn(owner)} → `{ep.handler.rsplit('.', 1)[-1]}`",
-                f"**Source:** `{ep.file}:{ep.line}`", f"**Framework:** {ep.framework or '-'}", ""]
+        fm = {
+            "type": "endpoint",
+            "http_method": ep.http_method,
+            "path": ep.path,
+            "handler": ep.handler,
+            "file": ep.file,
+            "line": ep.line,
+            "framework": ep.framework or "",
+            "tags": ["devanalyzer", "endpoint", f"http/{ep.http_method.lower()}"],
+        }
+        body = [
+            f"# {ep.http_method} {ep.path}",
+            "",
+            f"**Handler:** {self._link_fqn(owner)} → `{ep.handler.rsplit('.', 1)[-1]}`",
+            f"**Source:** `{ep.file}:{ep.line}`",
+            f"**Framework:** {ep.framework or '-'}",
+            "",
+        ]
         return fm, "\n".join(body)
 
     def _rule_note(self, r: BusinessRule, analysis: ProjectAnalysis) -> tuple[dict, str]:
-        fm = {"type": "business-rule", "rule_id": r.id, "status": r.status.value, "category": r.category, "confidence": round(r.confidence, 2),
-              "source_unit": r.source_unit or "", "domain_terms": r.domain_terms, "model": r.model or "",
-              "tags": ["devanalyzer", "business-rule", f"status/{r.status.value}", f"category/{r.category}"]}
-        lines = [f"# {r.id}", "", f"> [!{'tip' if r.status.value == 'confirmed' else 'warning' if r.status.value == 'rejected' else 'question'}] {r.status.value.title()}",
-                 f"> {r.statement}", ""]
+        fm = {
+            "type": "business-rule",
+            "rule_id": r.id,
+            "status": r.status.value,
+            "category": r.category,
+            "confidence": round(r.confidence, 2),
+            "source_unit": r.source_unit or "",
+            "domain_terms": r.domain_terms,
+            "model": r.model or "",
+            "tags": ["devanalyzer", "business-rule", f"status/{r.status.value}", f"category/{r.category}"],
+        }
+        lines = [
+            f"# {r.id}",
+            "",
+            f"> [!{'tip' if r.status.value == 'confirmed' else 'warning' if r.status.value == 'rejected' else 'question'}] {r.status.value.title()}",
+            f"> {r.statement}",
+            "",
+        ]
         if r.rationale:
             lines += ["## Rationale", "", r.rationale, ""]
         if r.domain_terms:
@@ -198,7 +236,10 @@ class ObsidianVault:
             if e.snippet:
                 lang = self._language_by_fqn.get(r.source_unit or "", "")
                 lines += ["", f"```{lang}", e.snippet, "```", ""]
-        lines += ["", f"*Inferred by `{r.model or 'llm'}` with confidence {r.confidence:.0%}. Review with* `devanalyzer rules review <project> {r.id} --status confirmed|rejected`"]
+        lines += [
+            "",
+            f"*Inferred by `{r.model or 'llm'}` with confidence {r.confidence:.0%}. Review with* `devanalyzer rules review <project> {r.id} --status confirmed|rejected`",
+        ]
         return fm, "\n".join(lines)
 
     def _term_note(self, g: GlossaryTerm, rules: list[BusinessRule]) -> tuple[dict, str]:
@@ -215,14 +256,30 @@ class ObsidianVault:
         return fm, f"# {d['title']}\n\n{d.get('body') or ''}\n"
 
     def _module_note(self, build, analysis: ProjectAnalysis) -> tuple[dict, str]:
-        fm = {"type": "module", "build_system": build.system.value, "manifest": build.manifest_path, "tags": ["devanalyzer", "module"], **{f"version_{k}": v for k, v in build.versions.items()}}
-        lines = [f"# {build.project_name or build.manifest_path}", "", f"**Build system:** {build.system.value}  ", f"**Manifest:** `{build.manifest_path}`", ""]
+        fm = {
+            "type": "module",
+            "build_system": build.system.value,
+            "manifest": build.manifest_path,
+            "tags": ["devanalyzer", "module"],
+            **{f"version_{k}": v for k, v in build.versions.items()},
+        }
+        lines = [
+            f"# {build.project_name or build.manifest_path}",
+            "",
+            f"**Build system:** {build.system.value}  ",
+            f"**Manifest:** `{build.manifest_path}`",
+            "",
+        ]
         if build.versions:
             lines += ["## Versions", ""] + [f"- {k}: `{v}`" for k, v in build.versions.items()] + [""]
         if build.frameworks:
             lines += ["## Frameworks", ""] + [f"- {f.name} `{f.version or 'managed'}`" for f in build.frameworks] + [""]
         if build.dependencies:
-            lines += ["## Dependencies", "", "| Name | Version | Scope |", "|---|---|---|"] + [f"| `{d.name}` | {d.version or 'managed'} | {d.scope} |" for d in build.dependencies] + [""]
+            lines += (
+                ["## Dependencies", "", "| Name | Version | Scope |", "|---|---|---|"]
+                + [f"| `{d.name}` | {d.version or 'managed'} | {d.scope} |" for d in build.dependencies]
+                + [""]
+            )
         return fm, "\n".join(lines)
 
     def _moc_architecture(self, analysis: ProjectAnalysis, types: list[CodeUnit], graph: KnowledgeGraph) -> tuple[dict, str]:
@@ -231,12 +288,26 @@ class ObsidianVault:
         by_stereotype: dict[str, list[CodeUnit]] = defaultdict(list)
         for t in types:
             by_stereotype[t.stereotype or "other"].append(t)
-        for stereotype in sorted(by_stereotype, key=lambda s: ("controller", "service", "repository", "entity").index(s) if s in ("controller", "service", "repository", "entity") else 99):
-            lines += [f"## {stereotype.title()} ({len(by_stereotype[stereotype])})", ""] + [f"- [[{safe_name(t.name)}]] `{t.package or ''}`" for t in sorted(by_stereotype[stereotype], key=lambda u: u.name)] + [""]
+        for stereotype in sorted(
+            by_stereotype,
+            key=lambda s: ("controller", "service", "repository", "entity").index(s) if s in ("controller", "service", "repository", "entity") else 99,
+        ):
+            lines += (
+                [f"## {stereotype.title()} ({len(by_stereotype[stereotype])})", ""]
+                + [f"- [[{safe_name(t.name)}]] `{t.package or ''}`" for t in sorted(by_stereotype[stereotype], key=lambda u: u.name)]
+                + [""]
+            )
         top = graph.top_by_degree(10)
         if top:
             lines += ["## Most referenced types", ""] + [f"- {self._link_node(n)} ({d})" for n, d in top if d] + [""]
-        lines += ["## Dataview", "", "```dataview", 'TABLE stereotype, package, file FROM "' + self._rel(FOLDERS["classes"]) + '" SORT stereotype, file', "```", ""]
+        lines += [
+            "## Dataview",
+            "",
+            "```dataview",
+            'TABLE stereotype, package, file FROM "' + self._rel(FOLDERS["classes"]) + '" SORT stereotype, file',
+            "```",
+            "",
+        ]
         lines += ["![[architecture.canvas]]", ""]
         return fm, "\n".join(lines)
 
@@ -247,8 +318,19 @@ class ObsidianVault:
         for r in rules:
             by_cat[r.category].append(r)
         for cat in sorted(by_cat):
-            lines += [f"## {cat.replace('_', ' ').title()} ({len(by_cat[cat])})", ""] + [f"- {self._link_rule(r)} — {r.status.value} · {self._link_fqn(r.source_unit) if r.source_unit else ''}" for r in by_cat[cat]] + [""]
-        lines += ["## Pending review", "", "```dataview", 'TABLE status, category, confidence, source_unit FROM "' + self._rel(FOLDERS["rules"]) + '" WHERE status = "inferred" SORT confidence DESC', "```", ""]
+            lines += (
+                [f"## {cat.replace('_', ' ').title()} ({len(by_cat[cat])})", ""]
+                + [f"- {self._link_rule(r)} — {r.status.value} · {self._link_fqn(r.source_unit) if r.source_unit else ''}" for r in by_cat[cat]]
+                + [""]
+            )
+        lines += [
+            "## Pending review",
+            "",
+            "```dataview",
+            'TABLE status, category, confidence, source_unit FROM "' + self._rel(FOLDERS["rules"]) + '" WHERE status = "inferred" SORT confidence DESC',
+            "```",
+            "",
+        ]
         return fm, "\n".join(lines)
 
     def _moc_glossary(self, glossary: list[GlossaryTerm]) -> tuple[dict, str]:
@@ -258,13 +340,26 @@ class ObsidianVault:
 
     def _home(self, analysis: ProjectAnalysis, types, rules, glossary) -> tuple[dict, str]:
         fm = {"type": "project", "project": analysis.project_name, "path": analysis.project_path, "tags": ["devanalyzer", "project"]}
-        lines = [f"# {analysis.project_name}", "", f"- Files: {analysis.metrics.files} · LOC: {analysis.metrics.loc}",
-                 f"- Languages: {', '.join(l.language.value for l in analysis.languages)}",
-                 f"- Build: {', '.join(f'{b.system.value} ({b.manifest_path})' for b in analysis.builds)}",
-                 f"- Versions: {', '.join(f'{k}={v}' for k, v in analysis.versions.items()) or '-'}",
-                 f"- Frameworks: {', '.join(f.name for f in analysis.frameworks) or '-'}", "",
-                 "## Maps of content", "", "- [[Architecture]]", "- [[Business Rules]]", "- [[Glossary]]", "",
-                 "## Stats", "", f"- Types: {len(types)} · Endpoints: {len(analysis.endpoints)} · Rules: {len(rules)} · Terms: {len(glossary)}", ""]
+        lines = [
+            f"# {analysis.project_name}",
+            "",
+            f"- Files: {analysis.metrics.files} · LOC: {analysis.metrics.loc}",
+            f"- Languages: {', '.join(l.language.value for l in analysis.languages)}",
+            f"- Build: {', '.join(f'{b.system.value} ({b.manifest_path})' for b in analysis.builds)}",
+            f"- Versions: {', '.join(f'{k}={v}' for k, v in analysis.versions.items()) or '-'}",
+            f"- Frameworks: {', '.join(f.name for f in analysis.frameworks) or '-'}",
+            "",
+            "## Maps of content",
+            "",
+            "- [[Architecture]]",
+            "- [[Business Rules]]",
+            "- [[Glossary]]",
+            "",
+            "## Stats",
+            "",
+            f"- Types: {len(types)} · Endpoints: {len(analysis.endpoints)} · Rules: {len(rules)} · Terms: {len(glossary)}",
+            "",
+        ]
         return fm, "\n".join(lines)
 
     # ------------------------------------------------------------ canvas
@@ -279,8 +374,18 @@ class ObsidianVault:
             for row, unit in enumerate(sorted(columns.get(key, []), key=lambda u: u.name)):
                 x, y = col * 420, row * 140
                 pos[unit.fqn] = (x, y)
-                nodes.append({"id": unit.fqn, "type": "file", "file": self._rel(f"{FOLDERS['classes']}/{safe_name(unit.name)}.md"), "x": x, "y": y, "width": 360, "height": 100,
-                              "color": {"controller": "4", "service": "3", "repository": "5", "entity": "6"}.get(key, "1")})
+                nodes.append(
+                    {
+                        "id": unit.fqn,
+                        "type": "file",
+                        "file": self._rel(f"{FOLDERS['classes']}/{safe_name(unit.name)}.md"),
+                        "x": x,
+                        "y": y,
+                        "width": 360,
+                        "height": 100,
+                        "color": {"controller": "4", "service": "3", "repository": "5", "entity": "6"}.get(key, "1"),
+                    }
+                )
         for u, v, k in graph.g.edges(keys=True):
             if u in pos and v in pos and k in (RelationKind.DEPENDS_ON.value, RelationKind.EXTENDS.value, RelationKind.IMPLEMENTS.value):
                 edges.append({"id": f"{u}->{v}:{k}", "fromNode": u, "toNode": v, "fromSide": "right", "toSide": "left", "label": k})
@@ -355,4 +460,4 @@ class ObsidianVault:
             # Legacy/unknown note: keep everything (minus frontmatter) as manual content.
             stripped = re.sub(r"^---\n.*?\n---\n", "", existing, count=1, flags=re.S)
             return "\n\n" + stripped.strip() + "\n" if stripped.strip() else MANUAL_HINT
-        return existing[end + len(GENERATED_END):] or MANUAL_HINT
+        return existing[end + len(GENERATED_END) :] or MANUAL_HINT

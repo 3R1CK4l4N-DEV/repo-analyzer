@@ -134,7 +134,11 @@ class NodeParser:
         for child in node.children:
             if child.type == "class_heritage":
                 for clause in child.children:
-                    targets = [self._text(c, src).split("<")[0] for c in clause.children if c.type in ("identifier", "type_identifier", "generic_type", "member_expression")]
+                    targets = [
+                        self._text(c, src).split("<")[0]
+                        for c in clause.children
+                        if c.type in ("identifier", "type_identifier", "generic_type", "member_expression")
+                    ]
                     (extends if clause.type == "extends_clause" else implements).extend(targets)
                 if node.type == "class_declaration" and not any(c.type in ("extends_clause", "implements_clause") for c in child.children):
                     extends += [self._text(c, src).split("<")[0] for c in child.children if c.type in ("identifier", "member_expression")]
@@ -182,7 +186,19 @@ class NodeParser:
             for p in ctor.parameters:
                 if p.name.startswith(("private ", "public ", "protected ", "readonly ")):
                     clean = p.name.split()[-1]
-                    unit.children.append(CodeUnit(kind=CodeUnitKind.FIELD, name=clean, fqn=f"{fqn}.{clean}", file=src.rel_path, line_start=ctor.line_start, line_end=ctor.line_start, language=src.language, type=p.type, modifiers=["injected"]))
+                    unit.children.append(
+                        CodeUnit(
+                            kind=CodeUnitKind.FIELD,
+                            name=clean,
+                            fqn=f"{fqn}.{clean}",
+                            file=src.rel_path,
+                            line_start=ctor.line_start,
+                            line_end=ctor.line_start,
+                            language=src.language,
+                            type=p.type,
+                            modifiers=["injected"],
+                        )
+                    )
                     p.name = clean
         return unit
 
@@ -230,7 +246,9 @@ class NodeParser:
             modifiers=[self._text(c, src) for c in node.children if c.type in ("accessibility_modifier", "static", "readonly")],
         )
 
-    def _function_unit(self, node: Node, nf: NodeFile, decorators: list[Annotation], exported: bool, module: str, name: str | None = None, span: Node | None = None) -> CodeUnit:
+    def _function_unit(
+        self, node: Node, nf: NodeFile, decorators: list[Annotation], exported: bool, module: str, name: str | None = None, span: Node | None = None
+    ) -> CodeUnit:
         src = nf.source
         name = name or (self._text(node.child_by_field_name("name"), src) if node.child_by_field_name("name") else "anonymous")
         params = self._params(node.child_by_field_name("parameters"), src)
@@ -281,15 +299,19 @@ class NodeParser:
         if not arg_nodes or arg_nodes[0].type not in ("string", "template_string"):
             return
         path = self._text(arg_nodes[0], src).strip("'\"`")
-        handler = self._text(arg_nodes[-1], src) if len(arg_nodes) > 1 and arg_nodes[-1].type in ("identifier", "member_expression") else f"{nf.module}.<inline>"
-        nf.endpoints.append(Endpoint(
-            http_method=method.upper() if method != "all" else "ANY",
-            path=path if path.startswith("/") else "/" + path,
-            handler=handler if "." in handler else f"{nf.module}.{handler}",
-            file=src.rel_path,
-            line=stmt.start_point[0] + 1,
-            framework="Express",
-        ))
+        handler = (
+            self._text(arg_nodes[-1], src) if len(arg_nodes) > 1 and arg_nodes[-1].type in ("identifier", "member_expression") else f"{nf.module}.<inline>"
+        )
+        nf.endpoints.append(
+            Endpoint(
+                http_method=method.upper() if method != "all" else "ANY",
+                path=path if path.startswith("/") else "/" + path,
+                handler=handler if "." in handler else f"{nf.module}.{handler}",
+                file=src.rel_path,
+                line=stmt.start_point[0] + 1,
+                framework="Express",
+            )
+        )
 
     # ------------------------------------------------------------ helpers
     @staticmethod
@@ -357,7 +379,9 @@ class NodeParser:
             if name_node is None:
                 continue
             if name_node.type == "object_pattern":
-                names = [self._text(c, src).split(":")[-1].strip() for c in name_node.children if c.type in ("shorthand_property_identifier_pattern", "pair_pattern")]
+                names = [
+                    self._text(c, src).split(":")[-1].strip() for c in name_node.children if c.type in ("shorthand_property_identifier_pattern", "pair_pattern")
+                ]
                 nf.imports.append(ImportSpec(source=source, names=names))
             else:
                 nf.imports.append(ImportSpec(source=source, names=[], default=self._text(name_node, src)))

@@ -1,6 +1,6 @@
 import copy
 
-from devanalyzer.core.models import CodeUnitKind, Dependency, Endpoint
+from devanalyzer.core.models import Dependency, Endpoint
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 from devanalyzer.llm.business_rules import BusinessRuleExtractor
 from devanalyzer.reporting.diff import diff_analyses, render_diff_markdown
@@ -30,7 +30,9 @@ def test_diff_detects_structural_changes(spring_analysis):
     service = next(u for u in java.units if u.name == "AccountService")
     service.children = [c for c in service.children if c.name != "close"]
     java.units = [u for u in java.units if u.name != "Auditable"]
-    java.endpoints = [e for e in java.endpoints if e.http_method != "DELETE"] + [Endpoint(http_method="GET", path="/accounts/search", handler="x.search", file="f", line=1)]
+    java.endpoints = [e for e in java.endpoints if e.http_method != "DELETE"] + [
+        Endpoint(http_method="GET", path="/accounts/search", handler="x.search", file="f", line=1)
+    ]
     after.builds[0].dependencies.append(Dependency(name="org.flywaydb:flyway-core", version="10.0.0"))
     after.builds[0].dependencies[0].version = "9.9.9"
     after.builds[0].versions["java"] = "22"

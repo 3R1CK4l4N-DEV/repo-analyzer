@@ -37,7 +37,13 @@ def test_python_project_analysis(settings, fixtures):
 def test_python_endpoints_fastapi_and_flask(settings, fixtures):
     analysis = ProjectAnalyzer(settings).run(fixtures / "python_fastapi")
     eps = {(e.http_method, e.path): e for e in analysis.endpoints}
-    assert set(eps) == {("GET", "/products/{sku}"), ("POST", "/products/{sku}/adjust"), ("GET", "/health"), ("GET", "/legacy/products"), ("POST", "/legacy/products")}
+    assert set(eps) == {
+        ("GET", "/products/{sku}"),
+        ("POST", "/products/{sku}/adjust"),
+        ("GET", "/health"),
+        ("GET", "/legacy/products"),
+        ("POST", "/legacy/products"),
+    }
     assert eps[("POST", "/products/{sku}/adjust")].handler == "app.api.adjust"
     assert eps[("POST", "/products/{sku}/adjust")].framework == "FastAPI" and eps[("POST", "/products/{sku}/adjust")].line == 19
     assert eps[("GET", "/legacy/products")].framework == "Flask"

@@ -4,6 +4,7 @@ Run with: `devanalyzer serve <project>` (stdio) or `devanalyzer serve <project> 
 Data is read from `<project>/.devanalyzer/` (run `devanalyzer graph build` and `rules extract` first);
 if the graph is missing it is built on the fly.
 """
+
 from __future__ import annotations
 
 import json
@@ -66,11 +67,14 @@ def create_server(project: Path, name: str = "devanalyzer"):
     from mcp.server.fastmcp import FastMCP
 
     ctx = ProjectContext(project)
-    mcp = FastMCP(name, instructions=(
-        "Tools to explore a software project analyzed by DevAnalyzer: architecture graph, code units, "
-        "endpoints, dependencies, AI-inferred business rules and the domain glossary. "
-        "Business rules with status 'inferred' have not been reviewed by a human yet."
-    ))
+    mcp = FastMCP(
+        name,
+        instructions=(
+            "Tools to explore a software project analyzed by DevAnalyzer: architecture graph, code units, "
+            "endpoints, dependencies, AI-inferred business rules and the domain glossary. "
+            "Business rules with status 'inferred' have not been reviewed by a human yet."
+        ),
+    )
 
     def _dump(obj: Any) -> str:
         return json.dumps(obj, indent=2, ensure_ascii=False, default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o))
@@ -79,17 +83,19 @@ def create_server(project: Path, name: str = "devanalyzer"):
     def get_project_summary() -> str:
         """High-level summary: languages, build systems, versions, frameworks, metrics and graph stats."""
         a = ctx.analysis
-        return _dump({
-            "project": a.project_name,
-            "path": a.project_path,
-            "languages": [{"language": l.language.value, "confidence": l.confidence, "files": l.files, "loc": l.loc} for l in a.languages],
-            "build_systems": [b.value for b in a.build_systems],
-            "versions": a.versions,
-            "frameworks": [f.model_dump() for f in a.frameworks],
-            "metrics": a.metrics.model_dump(exclude={"fan_in", "fan_out"}),
-            "endpoints": len(a.endpoints),
-            "graph": ctx.graph.stats(),
-        })
+        return _dump(
+            {
+                "project": a.project_name,
+                "path": a.project_path,
+                "languages": [{"language": l.language.value, "confidence": l.confidence, "files": l.files, "loc": l.loc} for l in a.languages],
+                "build_systems": [b.value for b in a.build_systems],
+                "versions": a.versions,
+                "frameworks": [f.model_dump() for f in a.frameworks],
+                "metrics": a.metrics.model_dump(exclude={"fan_in", "fan_out"}),
+                "endpoints": len(a.endpoints),
+                "graph": ctx.graph.stats(),
+            }
+        )
 
     @mcp.tool()
     def list_code_units(stereotype: str | None = None, kind: str | None = None, package: str | None = None, limit: int = 200) -> str:
@@ -118,8 +124,21 @@ def create_server(project: Path, name: str = "devanalyzer"):
         unit = next((u for u in _iter_units(ctx.analysis) if u.fqn == node), None)
         result: dict[str, Any] = {"id": node, **data}
         if unit is not None:
-            result["methods"] = [{"name": m.name, "signature": f"{m.name}({', '.join(p.type or '?' for p in m.parameters)})", "returns": m.type, "line": m.line_start, "annotations": [a.name for a in m.annotations], "calls": m.calls} for m in unit.children if m.kind.value in ("method", "function")]
-            result["fields"] = [{"name": f.name, "type": f.type, "annotations": [a.name for a in f.annotations]} for f in unit.children if f.kind.value == "field"]
+            result["methods"] = [
+                {
+                    "name": m.name,
+                    "signature": f"{m.name}({', '.join(p.type or '?' for p in m.parameters)})",
+                    "returns": m.type,
+                    "line": m.line_start,
+                    "annotations": [a.name for a in m.annotations],
+                    "calls": m.calls,
+                }
+                for m in unit.children
+                if m.kind.value in ("method", "function")
+            ]
+            result["fields"] = [
+                {"name": f.name, "type": f.type, "annotations": [a.name for a in f.annotations]} for f in unit.children if f.kind.value == "field"
+            ]
             result["extends"], result["implements"], result["docstring"] = unit.extends, unit.implements, unit.docstring
         result["outgoing"] = [{"target": t, "kind": k} for t, k in ctx.graph.neighbors(node, direction="out") if k != "contains"]
         result["incoming"] = [{"source": s, "kind": k} for s, k in ctx.graph.neighbors(node, direction="in") if k != "contains"]
@@ -143,7 +162,13 @@ def create_server(project: Path, name: str = "devanalyzer"):
         if depth == 1 and direction in ("out", "in"):
             side = "source" if direction == "out" else "target"
             edges = [e for e in edges if e[side] == start]
-        return _dump({"start": start, "nodes": [{"id": n, **{k: v for k, v in d.items() if k in ("kind", "stereotype", "file", "line")}} for n, d in sub.g.nodes(data=True)], "edges": edges})
+        return _dump(
+            {
+                "start": start,
+                "nodes": [{"id": n, **{k: v for k, v in d.items() if k in ("kind", "stereotype", "file", "line")}} for n, d in sub.g.nodes(data=True)],
+                "edges": edges,
+            }
+        )
 
     @mcp.tool()
     def find_path(source: str, target: str) -> str:
@@ -156,15 +181,17 @@ def create_server(project: Path, name: str = "devanalyzer"):
     @mcp.tool()
     def list_endpoints(http_method: str | None = None, path_contains: str | None = None) -> str:
         """HTTP endpoints exposed by the project with their handlers and source location."""
-        eps = [e.model_dump() for e in ctx.analysis.endpoints
-               if (not http_method or e.http_method == http_method.upper()) and (not path_contains or path_contains in e.path)]
+        eps = [
+            e.model_dump()
+            for e in ctx.analysis.endpoints
+            if (not http_method or e.http_method == http_method.upper()) and (not path_contains or path_contains in e.path)
+        ]
         return _dump(eps)
 
     @mcp.tool()
     def list_dependencies(scope: str | None = None, search: str | None = None) -> str:
         """Declared third-party dependencies per build manifest with versions and scopes."""
-        deps = [d.model_dump() for d in ctx.analysis.dependencies
-                if (not scope or d.scope == scope) and (not search or search.lower() in d.name.lower())]
+        deps = [d.model_dump() for d in ctx.analysis.dependencies if (not scope or d.scope == scope) and (not search or search.lower() in d.name.lower())]
         return _dump(deps)
 
     @mcp.tool()
@@ -195,7 +222,10 @@ def create_server(project: Path, name: str = "devanalyzer"):
                 hits.append({"type": d.get("kind"), "id": n, "file": d.get("file"), "line": d.get("line")})
         if (ctx.out_dir / "kb.sqlite").is_file():
             with ctx.kb() as kb:
-                hits += [{"type": "business_rule", "id": r.id, "statement": r.statement, "status": r.status.value, "unit": r.source_unit} for r in kb.rules(search=query)]
+                hits += [
+                    {"type": "business_rule", "id": r.id, "statement": r.statement, "status": r.status.value, "unit": r.source_unit}
+                    for r in kb.rules(search=query)
+                ]
                 hits += [{"type": "glossary_term", "id": t.term, "definition": t.definition, "units": t.related_units} for t in kb.terms(search=query)]
         return _dump(hits[:limit])
 

@@ -5,11 +5,11 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, Iterable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from devanalyzer.config import Settings, get_settings
 from devanalyzer.core.models import (
@@ -182,7 +182,9 @@ class BusinessRuleExtractor:
         return result
 
     # ------------------------------------------------------------ verification
-    def verify(self, result: RuleExtractionResult, root: str | Path | None = None, workers: int = 1, context_lines: int = 6, judge: LLMProvider | None = None) -> RuleExtractionResult:
+    def verify(
+        self, result: RuleExtractionResult, root: str | Path | None = None, workers: int = 1, context_lines: int = 6, judge: LLMProvider | None = None
+    ) -> RuleExtractionResult:
         """Second LLM pass: judge each rule strictly against its evidence (plus surrounding context).
 
         Adjusts confidence, tags the verdict, rewrites 'partial' statements and moves
@@ -204,8 +206,14 @@ class BusinessRuleExtractor:
                 start, end = max(1, ev.line_start - context_lines), ev.line_end + context_lines
                 snippet = self._slice(root / ev.file, start, end) or ev.snippet
             prompt = template.format(
-                statement=rule.statement, rationale=rule.rationale or "-", file=ev.file, line_start=start,
-                line_end=end, language=self._language_of(rule), snippet=snippet, output_language=self.output_language,
+                statement=rule.statement,
+                rationale=rule.rationale or "-",
+                file=ev.file,
+                line_start=start,
+                line_end=end,
+                language=self._language_of(rule),
+                snippet=snippet,
+                output_language=self.output_language,
             )
             try:
                 return rule, _LLMVerdict.model_validate(parse_llm_json(self._cached_generate(prompt, judge))), None

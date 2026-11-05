@@ -75,14 +75,16 @@ def extract_nest_endpoints(unit: CodeUnit) -> list[Endpoint]:
             continue
         for ann in method.annotations:
             if ann.name in NEST_HTTP:
-                endpoints.append(Endpoint(
-                    http_method=NEST_HTTP[ann.name],
-                    path=_join(base, _arg_path(ann.arguments)),
-                    handler=method.fqn,
-                    file=method.file,
-                    line=method.line_start,
-                    framework="NestJS",
-                ))
+                endpoints.append(
+                    Endpoint(
+                        http_method=NEST_HTTP[ann.name],
+                        path=_join(base, _arg_path(ann.arguments)),
+                        handler=method.fqn,
+                        file=method.file,
+                        line=method.line_start,
+                        framework="NestJS",
+                    )
+                )
     return endpoints
 
 

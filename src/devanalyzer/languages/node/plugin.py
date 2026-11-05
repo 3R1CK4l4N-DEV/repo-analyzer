@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from devanalyzer.config import Settings
+from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.plugin import language_ratio
-from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.languages.node.frameworks import TYPE_KINDS, apply_stereotypes, extract_nest_endpoints, extract_relations
 from devanalyzer.languages.node.parser import NodeParser, module_id
 

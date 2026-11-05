@@ -56,9 +56,7 @@ def classify(unit: CodeUnit) -> str | None:
     for ann in unit.annotations:
         if ann.name in STEREOTYPES:
             return STEREOTYPES[ann.name]
-    if unit.kind == CodeUnitKind.INTERFACE and any(
-        base.split(".")[-1].split("<")[0] in REPOSITORY_BASES for base in unit.extends
-    ):
+    if unit.kind == CodeUnitKind.INTERFACE and any(base.split(".")[-1].split("<")[0] in REPOSITORY_BASES for base in unit.extends):
         return "repository"
     return None
 

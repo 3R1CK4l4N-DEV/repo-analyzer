@@ -47,7 +47,9 @@ async def test_mcp_tools_end_to_end(project):
         assert "MAX_DEPOSIT" in unit["source"]
 
         graph = await _call(session, "query_graph", node="AccountController", relation="depends_on", direction="out")
-        assert graph["edges"] == [{"source": "com.acme.bank.controller.AccountController", "kind": "depends_on", "target": "com.acme.bank.service.AccountService"}]
+        assert graph["edges"] == [
+            {"source": "com.acme.bank.controller.AccountController", "kind": "depends_on", "target": "com.acme.bank.service.AccountService"}
+        ]
 
         path = await _call(session, "find_path", source="AccountController", target="Account")
         assert path["path"][0].endswith("AccountController") and path["path"][-1].endswith("Account")

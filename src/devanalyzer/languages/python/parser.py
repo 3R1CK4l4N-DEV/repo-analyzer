@@ -96,7 +96,19 @@ class PythonParser:
                 pf.units.append(unit)
                 pf.endpoints.extend(self._endpoints_from_decorators(unit, pf))
         if not pf.units and lines:
-            pf.units.append(CodeUnit(kind=CodeUnitKind.MODULE, name=pf.module.rsplit(".", 1)[-1], fqn=pf.module, file=source.rel_path, line_start=1, line_end=max(1, len(lines)), language=Language.PYTHON, package=pf.module.rpartition(".")[0] or None, docstring=ast.get_docstring(tree)))
+            pf.units.append(
+                CodeUnit(
+                    kind=CodeUnitKind.MODULE,
+                    name=pf.module.rsplit(".", 1)[-1],
+                    fqn=pf.module,
+                    file=source.rel_path,
+                    line_start=1,
+                    line_end=max(1, len(lines)),
+                    language=Language.PYTHON,
+                    package=pf.module.rpartition(".")[0] or None,
+                    docstring=ast.get_docstring(tree),
+                )
+            )
         return pf
 
     # ------------------------------------------------------------ imports / routers
@@ -150,11 +162,33 @@ class PythonParser:
             elif isinstance(member, ast.ClassDef):
                 unit.children.append(self._class_unit(member, pf, fqn))
             elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
-                unit.children.append(CodeUnit(kind=CodeUnitKind.FIELD, name=member.target.id, fqn=f"{fqn}.{member.target.id}", file=pf.source.rel_path, line_start=member.lineno, line_end=member.end_lineno or member.lineno, language=Language.PYTHON, type=ast.unparse(member.annotation)))
+                unit.children.append(
+                    CodeUnit(
+                        kind=CodeUnitKind.FIELD,
+                        name=member.target.id,
+                        fqn=f"{fqn}.{member.target.id}",
+                        file=pf.source.rel_path,
+                        line_start=member.lineno,
+                        line_end=member.end_lineno or member.lineno,
+                        language=Language.PYTHON,
+                        type=ast.unparse(member.annotation),
+                    )
+                )
             elif isinstance(member, ast.Assign):
                 for t in member.targets:
                     if isinstance(t, ast.Name):
-                        unit.children.append(CodeUnit(kind=CodeUnitKind.FIELD, name=t.id, fqn=f"{fqn}.{t.id}", file=pf.source.rel_path, line_start=member.lineno, line_end=member.end_lineno or member.lineno, language=Language.PYTHON, type=_dotted(member.value.func) if isinstance(member.value, ast.Call) else None))
+                        unit.children.append(
+                            CodeUnit(
+                                kind=CodeUnitKind.FIELD,
+                                name=t.id,
+                                fqn=f"{fqn}.{t.id}",
+                                file=pf.source.rel_path,
+                                line_start=member.lineno,
+                                line_end=member.end_lineno or member.lineno,
+                                language=Language.PYTHON,
+                                type=_dotted(member.value.func) if isinstance(member.value, ast.Call) else None,
+                            )
+                        )
         # attributes assigned in __init__ (self.x: T = ... / self.x = Dep())
         init = next((m for m in node.body if isinstance(m, ast.FunctionDef) and m.name == "__init__"), None)
         if init is not None:
@@ -175,7 +209,19 @@ class PythonParser:
                                 type_text = _dotted(stmt.value.func)
                 if target and target not in known:
                     known.add(target)
-                    unit.children.append(CodeUnit(kind=CodeUnitKind.FIELD, name=target, fqn=f"{fqn}.{target}", file=pf.source.rel_path, line_start=stmt.lineno, line_end=stmt.end_lineno or stmt.lineno, language=Language.PYTHON, type=type_text, modifiers=["injected"] if type_text in param_types.values() else []))
+                    unit.children.append(
+                        CodeUnit(
+                            kind=CodeUnitKind.FIELD,
+                            name=target,
+                            fqn=f"{fqn}.{target}",
+                            file=pf.source.rel_path,
+                            line_start=stmt.lineno,
+                            line_end=stmt.end_lineno or stmt.lineno,
+                            language=Language.PYTHON,
+                            type=type_text,
+                            modifiers=["injected"] if type_text in param_types.values() else [],
+                        )
+                    )
         return unit
 
     def _function_unit(self, node: ast.FunctionDef | ast.AsyncFunctionDef, pf: PyFile, parent: str, kind: CodeUnitKind) -> CodeUnit:
@@ -231,13 +277,18 @@ class PythonParser:
                 prefix = pf.router_prefixes.get(receiver, "")
                 framework = pf.router_frameworks.get(receiver, "FastAPI" if attr == "api_route" else "Flask")
                 for m in methods:
-                    endpoints.append(Endpoint(http_method=m, path=_join(prefix, path), handler=unit.fqn, file=unit.file, line=unit.line_start, framework=framework))
+                    endpoints.append(
+                        Endpoint(http_method=m, path=_join(prefix, path), handler=unit.fqn, file=unit.file, line=unit.line_start, framework=framework)
+                    )
         return endpoints
 
     @staticmethod
     def _decorator(node: ast.expr) -> Annotation:
         if isinstance(node, ast.Call):
-            return Annotation(name=_dotted(node.func) or ast.unparse(node.func), arguments=", ".join([ast.unparse(a) for a in node.args] + [f"{k.arg}={ast.unparse(k.value)}" for k in node.keywords]))
+            return Annotation(
+                name=_dotted(node.func) or ast.unparse(node.func),
+                arguments=", ".join([ast.unparse(a) for a in node.args] + [f"{k.arg}={ast.unparse(k.value)}" for k in node.keywords]),
+            )
         return Annotation(name=_dotted(node) or ast.unparse(node))
 
 

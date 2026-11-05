@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from devanalyzer.config import Settings
+from devanalyzer.core.metrics import compute_metrics, iter_types
 from devanalyzer.core.models import BuildInfo, BuildSystem, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.plugin import language_ratio
-from devanalyzer.core.metrics import compute_metrics, iter_types
 from devanalyzer.languages.java.parser import JavaParser
 from devanalyzer.languages.java.spring import apply_stereotypes, extract_endpoints, extract_relations
 

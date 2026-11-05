@@ -42,9 +42,7 @@ def apply_stereotypes(units: list[CodeUnit]) -> None:
         if unit.kind in TYPE_KINDS:
             unit.stereotype = classify(unit)
             apply_stereotypes([c for c in unit.children if c.kind == CodeUnitKind.CLASS])
-        elif unit.kind == CodeUnitKind.FUNCTION and any(
-            a.name.rpartition(".")[2] in HTTP_METHODS | ROUTE_DECORATORS for a in unit.annotations
-        ):
+        elif unit.kind == CodeUnitKind.FUNCTION and any(a.name.rpartition(".")[2] in HTTP_METHODS | ROUTE_DECORATORS for a in unit.annotations):
             unit.stereotype = "controller"
 
 

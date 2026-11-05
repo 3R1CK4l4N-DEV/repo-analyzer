@@ -1,4 +1,4 @@
-from flask import Blueprint, Flask
+from flask import Blueprint
 
 bp = Blueprint("legacy", __name__, url_prefix="/legacy")
 

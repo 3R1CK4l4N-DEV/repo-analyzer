@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import networkx as nx
 
@@ -32,7 +33,13 @@ class KnowledgeGraph:
 
         for build in analysis.builds:
             module_id = f"module:{build.manifest_path}"
-            g.add_node(module_id, kind="module", name=build.project_name or build.manifest_path, build_system=build.system.value, **{f"version_{k}": v for k, v in build.versions.items()})
+            g.add_node(
+                module_id,
+                kind="module",
+                name=build.project_name or build.manifest_path,
+                build_system=build.system.value,
+                **{f"version_{k}": v for k, v in build.versions.items()},
+            )
             kg._edge(project_id, module_id, RelationKind.CONTAINS)
             for fw in build.frameworks:
                 fw_id = f"framework:{fw.name}"
@@ -48,7 +55,16 @@ class KnowledgeGraph:
                 kg._add_unit(unit, parent_id=kg._package_node(unit.package, project_id, lang.language.value))
             for ep in lang.endpoints:
                 ep_id = f"endpoint:{ep.http_method} {ep.path}"
-                g.add_node(ep_id, kind="endpoint", name=f"{ep.http_method} {ep.path}", http_method=ep.http_method, path=ep.path, file=ep.file, line=ep.line, framework=ep.framework)
+                g.add_node(
+                    ep_id,
+                    kind="endpoint",
+                    name=f"{ep.http_method} {ep.path}",
+                    http_method=ep.http_method,
+                    path=ep.path,
+                    file=ep.file,
+                    line=ep.line,
+                    framework=ep.framework,
+                )
                 owner = ep.handler.rpartition(".")[0]
                 if owner in g:
                     kg._edge(owner, ep_id, RelationKind.EXPOSES)
@@ -188,13 +204,13 @@ class KnowledgeGraph:
                 f.write(f"    <node id={quoteattr(str(node))}>")
                 for k, v in data.items():
                     if v is not None and v != "":
-                        f.write(f'<data key={quoteattr("n_" + k)}>{escape(str(v).lower() if isinstance(v, bool) else str(v))}</data>')
+                        f.write(f"<data key={quoteattr('n_' + k)}>{escape(str(v).lower() if isinstance(v, bool) else str(v))}</data>")
                 f.write("</node>\n")
             for i, (u, v, data) in enumerate(self.g.edges(data=True)):
                 f.write(f'    <edge id="e{i}" source={quoteattr(str(u))} target={quoteattr(str(v))}>')
                 for k, val in data.items():
                     if val is not None and val != "":
-                        f.write(f'<data key={quoteattr("e_" + k)}>{escape(str(val))}</data>')
+                        f.write(f"<data key={quoteattr('e_' + k)}>{escape(str(val))}</data>")
                 f.write("</edge>\n")
             f.write("  </graph>\n</graphml>\n")
 

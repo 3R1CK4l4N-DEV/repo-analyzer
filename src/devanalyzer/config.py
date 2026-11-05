@@ -25,13 +25,30 @@ DEFAULT_IGNORE_DIRS = {
 
 SUPPORTED_EXTENSIONS = {
     # Java
-    ".java", ".kt", ".xml", ".properties", ".gradle", ".kts",
+    ".java",
+    ".kt",
+    ".xml",
+    ".properties",
+    ".gradle",
+    ".kts",
     # Node / TS
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".json",
     # Python
-    ".py", ".toml", ".cfg", ".ini", ".txt",
+    ".py",
+    ".toml",
+    ".cfg",
+    ".ini",
+    ".txt",
     # Common
-    ".yml", ".yaml", ".md",
+    ".yml",
+    ".yaml",
+    ".md",
 }
 
 
