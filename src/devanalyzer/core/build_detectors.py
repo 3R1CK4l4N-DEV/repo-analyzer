@@ -175,6 +175,7 @@ class GradleDetector:
         re.X,
     )
     PLUGIN_RE = re.compile(r"""id\s*\(?\s*['"](?P<id>[^'"]+)['"]\s*\)?\s*version\s*\(?\s*['"](?P<ver>[^'"]+)['"]""")
+    KOTLIN_PLUGIN_RE = re.compile(r"""kotlin\s*\(\s*['"](?:jvm|multiplatform|android)['"]\s*\)\s*version\s*['"]([^'"]+)['"]""")
     JAVA_RES = [
         re.compile(r"JavaLanguageVersion\.of\(\s*(\d+)\s*\)"),
         re.compile(r"sourceCompatibility\s*=?\s*(?:JavaVersion\.VERSION_)?['\"]?(\d+(?:\.\d+)?)"),
@@ -200,6 +201,9 @@ class GradleDetector:
                 frameworks.append(Technology(name="Spring Boot", version=m.group("ver")))
             elif m.group("id").startswith("org.jetbrains.kotlin"):
                 versions.setdefault("kotlin", m.group("ver"))
+        if km := self.KOTLIN_PLUGIN_RE.search(content):
+            versions.setdefault("kotlin", km.group(1))
+            frameworks.append(Technology(name="Kotlin", version=km.group(1)))
 
         deps: list[Dependency] = []
         for m in self.DEP_RE.finditer(content):
