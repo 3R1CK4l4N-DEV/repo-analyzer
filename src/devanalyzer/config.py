@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Optional second model acting as judge in `rules extract --verify` (defaults to llm_model).
     verify_provider: str | None = None
     verify_model: str | None = None
+    # Semantic search embeddings (`devanalyzer index`, `search`, MCP semantic_search)
+    embedding_provider: str = "ollama"  # ollama | openai
+    embedding_model: str = "nomic-embed-text"
     ollama_host: str = "http://localhost:11434"
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None

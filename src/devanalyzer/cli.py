@@ -531,6 +531,51 @@ def diff(
         console.print(f"[green]Baseline updated: {base_path}[/green]")
 
 
+@app.command("index")
+def semantic_index(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    force: bool = typer.Option(False, "--force", help="Re-embed everything even if unchanged"),
+):
+    """Build/refresh the semantic index (embeddings) over code units, endpoints, tables, rules and terms."""
+    from devanalyzer.kb.semantic import SemanticIndex, build_documents, get_embedding_provider
+    from devanalyzer.kb.store import KnowledgeBase
+
+    settings = get_settings()
+    analysis = ProjectAnalyzer(settings).run(path)
+    provider = get_embedding_provider(settings)
+    with KnowledgeBase(_kb_path(path)) as kb:
+        rules, glossary = kb.rules(project=analysis.project_name), kb.terms(project=analysis.project_name)
+        docs = build_documents(analysis, rules, glossary)
+        stats = SemanticIndex(kb, provider, analysis.project_name).index(docs, force=force)
+    console.print(f"Embeddings: {provider.name}/{provider.model}  " + "  ".join(f"{k}={v}" for k, v in stats.items()))
+
+
+@app.command("search")
+def semantic_search(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    query: str = typer.Argument(..., help="Natural-language question, e.g. 'where are deposit limits validated?'"),
+    limit: int = typer.Option(10, "--limit", "-n"),
+    kind: list[str] = typer.Option([], "--kind", "-k", help="Restrict to kinds: class, method, endpoint, table, business_rule, glossary_term"),
+):
+    """Semantic search over the indexed project knowledge (run `devanalyzer index` first)."""
+    from devanalyzer.kb.semantic import SemanticIndex, get_embedding_provider
+    from devanalyzer.kb.store import KnowledgeBase
+
+    settings = get_settings()
+    project_name = ProjectAnalyzer(settings).run(path).project_name
+    with KnowledgeBase(_kb_path(path)) as kb:
+        idx = SemanticIndex(kb, get_embedding_provider(settings), project_name)
+        if idx.count() == 0:
+            console.print("[red]No embeddings yet; run `devanalyzer index <project>` first.[/red]")
+            raise typer.Exit(1)
+        hits = idx.search(query, limit=limit, kinds=set(kind) or None)
+    t = Table(title=f"Semantic search: {query}")
+    t.add_column("Score"), t.add_column("Kind"), t.add_column("Title"), t.add_column("Location"), t.add_column("Snippet")
+    for h in hits:
+        t.add_row(f"{h.score:.3f}", h.kind, h.title, f"{h.file}:{h.line}" if h.file else "", h.snippet[:80])
+    console.print(t)
+
+
 @app.command("serve")
 def serve(
     path: Path = typer.Argument(..., exists=True, help="Project root"),

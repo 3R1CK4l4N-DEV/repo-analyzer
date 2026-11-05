@@ -249,6 +249,19 @@ def create_server(project: Path, name: str = "devanalyzer"):
         return _dump(hits[:limit])
 
     @mcp.tool()
+    def semantic_search(query: str, limit: int = 10, kinds: list[str] | None = None) -> str:
+        """Meaning-based search (embeddings) across classes, methods, endpoints, tables, business rules and glossary terms. Requires `devanalyzer index`."""
+        from devanalyzer.kb.semantic import SemanticIndex, get_embedding_provider
+
+        if not (ctx.out_dir / "kb.sqlite").is_file():
+            return _dump({"error": "no knowledge base; run `devanalyzer index <project>`"})
+        with ctx.kb() as kb:
+            idx = SemanticIndex(kb, get_embedding_provider(get_settings()), ctx.analysis.project_name)
+            if idx.count() == 0:
+                return _dump({"error": "no embeddings yet; run `devanalyzer index <project>`"})
+            return _dump([h.__dict__ for h in idx.search(query, limit=limit, kinds=set(kinds) if kinds else None)])
+
+    @mcp.tool()
     def get_glossary(search: str | None = None) -> str:
         """Domain glossary (ubiquitous language) inferred from the code and linked to rules and units."""
         if not (ctx.out_dir / "kb.sqlite").is_file():
