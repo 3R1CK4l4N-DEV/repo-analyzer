@@ -1,6 +1,6 @@
 # DevAnalyzer — Estado actual y mejoras a definir
 
-Fecha: 2026-11-05 · Rama `main` (local, 11 commits, sin push) · 41/41 tests · ~4.6k líneas de código + 850 de tests
+Fecha: 2026-11-05 (actualizado tras iteración 2) · Rama `main` (local, 20 commits, sin push) · 60/60 tests
 
 ---
 
@@ -36,13 +36,19 @@ devanalyzer report | snapshot | diff  → HTML/MD autocontenido, diff estructura
 | + | Perf: vault 4.9→2.0 s, graph save 2.3→0.55 s (3.000 clases) | Hecho | `9afb66a` |
 | + | Extracción paralela `--workers`, cache atómica | Hecho | `5afebb2` |
 | + | Pasada de verificación `--verify` con modelo juez | Hecho | `e93923a` |
+| X1 | CI GitHub Actions (ubuntu/windows × py3.11/3.13) + ruff | Hecho | `ec43cfb` |
+| R2 | Gold datasets + `rules eval` (P/R sin LLM); `reviewed_by` humano vs juez | Hecho | `5d4caa0` |
+| R1 | `rules consolidate`: duplicados, reglas transversales, resumen por módulo/término; notas `35 Domains` | Hecho | `95cdb2e` |
+| O4 | `vault --sync`: status/review_note/statement editados en Obsidian → KB; ediciones humanas sobreviven re-extracciones | Hecho | `95cdb2e` |
+| O1 | Mermaid: classDiagram por módulo/arquitectura, sequenceDiagram por endpoint, erDiagram | Hecho | `daec95e` |
+| L5 | Esquema de BD desde migraciones (Flyway/SQL, Liquibase XML+YAML, Alembic, TypeORM, Prisma); entity→tabla; `60 Data` | Hecho | `05c0b6c` |
 
 ### 1.3 Validación con proyectos reales
 
 | Proyecto | Resultado |
 |---|---|
 | `~/IdeaProjects/BancoProject` (tuyo) | Maven, Java 17, Spring Boot 3.0.0, Lombok. Test de integración automático |
-| `spring-projects/spring-petclinic` (clonado y auditado: checksum wrapper OK, sin hooks, sin repos externos) | 17 endpoints, 304 nodos; 13 reglas de negocio en español; juez `qwen3:8b` detectó las 2 alucinaciones del generador `qwen2.5-coder:7b` sin falsos positivos |
+| `spring-projects/spring-petclinic` (clonado y auditado: checksum wrapper OK, sin hooks, sin repos externos) | 17 endpoints, 304 nodos, 7 tablas con mapeo entidad→tabla; 13 reglas en español; **eval P/R 91%** (generador `qwen2.5-coder:7b` + juez `qwen3:8b`); consolidación detecta 1 duplicado real |
 | DevAnalyzer sobre sí mismo (dogfooding) | 523 nodos / 1.717 aristas; test automático |
 | Sintético 3.000 clases Spring | Análisis estático completo ~5.5 s; grafo 18.8k nodos |
 
@@ -79,8 +85,8 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 
 | # | Mejora | Valor | Esfuerzo | Decisión requerida |
 |---|---|---|---|---|
-| R1 | **Consolidación por módulo**: segunda pasada que agrupa reglas duplicadas semánticamente entre clases y genera un resumen de dominio por paquete (reglas transversales: "toda operación monetaria valida monto > 0") | Alto | Medio | **[DECISIÓN D1]** |
-| R2 | **Dataset de evaluación**: fixture con reglas "gold" etiquetadas + `devanalyzer eval` que mide precisión/recall por modelo. Permite comparar modelos objetivamente en vez de revisión manual | Alto | Medio | **[DECISIÓN D2]** |
+| R1 | ~~Consolidación por módulo/término~~ | Hecho | — | D1 = ambas |
+| R2 | ~~Dataset de evaluación + `rules eval`~~ | Hecho | — | D2 = ambos (sintético + petclinic real etiquetado) |
 | R3 | Prompts por tipo de unidad (entity → invariantes/validaciones; controller → autorizaciones/contratos; service → políticas/cálculos) | Medio | Bajo | No |
 | R4 | Contexto enriquecido en el prompt: firmas de las dependencias que usa la clase (del grafo) para que el modelo entienda llamadas externas | Medio | Bajo | No |
 | R5 | Salida estructurada nativa (JSON mode / tool calling) en OpenAI/Anthropic/Ollama `format=json` en lugar de parseo tolerante | Medio | Bajo | No |
@@ -93,7 +99,7 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 | L2 | Java: Jakarta EE/JAX-RS (`@Path`, `@GET`), Quarkus, Micronaut | Medio | Bajo | **[DECISIÓN D3]** |
 | L3 | Node: aliases de `tsconfig.paths`, Fastify plugins, Next.js API routes (por carpeta) | Medio | Medio | **[DECISIÓN D3]** |
 | L4 | Python: Django (urls.py, models, views basadas en clase), SQLAlchemy models como entity | Medio | Medio | **[DECISIÓN D3]** |
-| L5 | SQL/migraciones (Flyway, Liquibase, Alembic) → nodos "tabla" en el grafo ligados a entities | Alto para reglas de datos | Medio | **[DECISIÓN D3]** |
+| L5 | ~~SQL/migraciones → tablas en grafo~~ | Hecho | — | Flyway, Liquibase, Alembic, TypeORM, Prisma |
 | L6 | C#/.NET, Go | Depende de tu cartera | Alto | **[DECISIÓN D3]** |
 
 ### 2.3 Grafo y base de conocimiento
@@ -110,16 +116,16 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 
 | # | Mejora | Valor | Esfuerzo | Decisión requerida |
 |---|---|---|---|---|
-| O1 | Diagramas Mermaid por módulo/caso de uso dentro de las notas (secuencia y clases) | Alto | Bajo | No |
+| O1 | ~~Diagramas Mermaid~~ | Hecho | — | class/sequence/ER |
 | O2 | Nota de "decisiones" (ADR) editable desde Obsidian que se sincronice de vuelta a la KB (lectura del vault → SQLite) | Medio | Medio | **[DECISIÓN D6]** |
 | O3 | Plantillas de nota personalizables por el usuario (`.devanalyzer/templates/*.md`) | Medio | Bajo | No |
-| O4 | Revisión de reglas desde Obsidian: cambiar `status:` en frontmatter y que `devanalyzer vault --sync` lo lleve a la KB | Alto (flujo natural para negocio) | Medio | **[DECISIÓN D6]** |
+| O4 | ~~Revisión desde Obsidian (`vault --sync`)~~ | Hecho | — | D6 = status + nota + enunciado |
 
 ### 2.5 Operación, DX y distribución
 
 | # | Mejora | Valor | Esfuerzo | Decisión requerida |
 |---|---|---|---|---|
-| X1 | **GitHub Actions**: tests en Windows/Linux, lint (ruff), matriz Python 3.11–3.13 | Alto | Bajo | **[DECISIÓN D7]** |
+| X1 | ~~GitHub Actions + ruff~~ | Hecho (se activa al hacer push) | — | |
 | X2 | `devanalyzer watch`: re-análisis al guardar y regeneración de notas afectadas | Medio | Medio | No |
 | X3 | Publicar en PyPI / `pipx install devanalyzer` | Medio | Bajo | **[DECISIÓN D7]** |
 | X4 | Docker image con Ollama + DevAnalyzer para demos | Bajo | Bajo | No |
@@ -128,7 +134,21 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 
 ---
 
-## 3. Decisiones que necesito de tu lado
+## 3. Decisiones tomadas
+
+| ID | Decisión |
+|---|---|
+| D1 | Consolidación por módulo **y** por término (hecho) |
+| D2 | Dataset sintético + petclinic etiquetado (hecho) |
+| D3 | Cartera: Java/Spring, **Kotlin+Spring**, **Jakarta/Quarkus/Micronaut**, Django/Next.js/.NET/Go → siguiente prioridad: Kotlin (L1), luego Jakarta (L2) |
+| D5 | Microservicios **próximamente** → la KB ya lleva `project` en todas las tablas y el grafo tiene nodo `project`; falta índice cross-repo (G4) |
+| D6 | Sync Obsidian→KB de status + nota + enunciado (hecho) |
+| D8 | **Sin push** por ahora; todo local |
+| L5 | Flyway, Liquibase, Alembic, TypeORM y Prisma (hecho) |
+
+Pendientes de decidir: **D4** (embeddings: recomiendo Ollama `nomic-embed-text` + SQLite) y **D7** (personal / equipo / open source).
+
+## 3b. Decisiones pendientes (texto original)
 
 | ID | Pregunta | Opciones | Mi recomendación |
 |---|---|---|---|
@@ -143,12 +163,15 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 
 ---
 
-## 4. Propuesta de siguiente iteración (si apruebas las recomendaciones)
+## 4. Iteración 2 — completada
 
-1. **D8** push.
-2. **X1** CI con GitHub Actions (barato, protege todo lo demás).
-3. **R2** dataset de evaluación + `devanalyzer eval` (sin métrica no podemos afirmar que R1/R3/R4 mejoran).
-4. **R1** consolidación por módulo y por término.
-5. **O4** revisión de reglas desde Obsidian (`vault --sync`).
-6. **O1** Mermaid en notas.
-7. Según D3: primer lenguaje/framework adicional.
+X1 → R2 → R1 → O4 → O1 → L5, todo con tests y validado en spring-petclinic.
+
+## 5. Propuesta de iteración 3
+
+1. **L1 Kotlin** (tree-sitter-kotlin; mismas heurísticas Spring) — tu cartera lo usa.
+2. **L2 Jakarta/Quarkus/Micronaut** (JAX-RS `@Path/@GET`, CDI `@Inject`, Panache) — bajo esfuerzo sobre el parser Java actual.
+3. **R3+R4** prompts por tipo de unidad + contexto de dependencias; medir con `rules eval` si sube P/R sobre el 91% actual.
+4. **G2 flujos end-to-end** (endpoint → service → repository → tabla) como casos de uso navegables; ya hay base con secuencias Mermaid + tablas.
+5. **G1 búsqueda semántica** si apruebas D4.
+6. **G4 multi-repo** (D5): índice de proyectos + relaciones por clientes HTTP/eventos.
