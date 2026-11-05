@@ -20,7 +20,7 @@ class ProjectAnalyzer:
     def run(self, path: str | Path) -> ProjectAnalysis:
         root = Path(path).resolve()
         files = self.reader.read(root)
-        builds = detect_builds(files)
+        builds = sorted(detect_builds(files), key=lambda b: (b.manifest_path.count("/"), b.manifest_path))
 
         analysis = ProjectAnalysis(
             project_name=next((b.project_name for b in builds if b.project_name), root.name),

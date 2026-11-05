@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from devanalyzer.config import Settings
-from devanalyzer.core.models import BuildInfo, Language, LanguageAnalysis, SourceFile
+from devanalyzer.core.metrics import compute_metrics
+from devanalyzer.core.models import BuildInfo, CodeUnitKind, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.plugin import language_ratio
+from devanalyzer.languages.python.frameworks import apply_stereotypes, extract_relations
+from devanalyzer.languages.python.parser import PythonParser, package_dirs
+
+SKIP_PREFIXES = ("tests/", "test_", "conftest")
 
 
 class PythonPlugin:
-    """Detection-only plugin; deep AST analysis for Python arrives in milestone M9."""
-
     language = Language.PYTHON
 
     def detect(self, files: list[SourceFile]) -> float:
@@ -19,9 +22,30 @@ class PythonPlugin:
 
     def analyze(self, files: list[SourceFile], builds: list[BuildInfo], settings: Settings) -> LanguageAnalysis:
         code = [f for f in files if f.language == Language.PYTHON]
+        parser = PythonParser(package_dirs([f.rel_path for f in code]))
+        parsed = [parser.parse(f) for f in code]
+        project_modules = {pf.module for pf in parsed} | {pf.module.rsplit(".__init__", 1)[0] for pf in parsed if pf.module.endswith("__init__")}
+
+        units = [u for pf in parsed for u in pf.units]
+        apply_stereotypes(units)
+        project_types = {u.fqn for u in self._iter_classes(units)}
+
+        endpoints = [e for pf in parsed for e in pf.endpoints]
+        relations = [r for pf in parsed for r in extract_relations(pf, project_modules, project_types)]
         return LanguageAnalysis(
-            language=self.language,
+            language=Language.PYTHON,
             confidence=self.detect(files),
             files=len(code),
             loc=sum(f.loc for f in code),
+            units=units,
+            endpoints=endpoints,
+            relations=relations,
+            metrics=compute_metrics(code, units, relations),
         )
+
+    @staticmethod
+    def _iter_classes(units):
+        for u in units:
+            if u.kind == CodeUnitKind.CLASS:
+                yield u
+                yield from PythonPlugin._iter_classes([c for c in u.children if c.kind == CodeUnitKind.CLASS])
