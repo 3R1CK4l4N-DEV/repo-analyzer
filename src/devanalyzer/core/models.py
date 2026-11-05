@@ -152,6 +152,52 @@ class Relation(BaseModel):
     kind: RelationKind
 
 
+class Evidence(BaseModel):
+    file: str
+    line_start: int
+    line_end: int
+    unit: str | None = None
+    snippet: str | None = None
+
+
+class RuleStatus(str, Enum):
+    INFERRED = "inferred"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+
+class BusinessRule(BaseModel):
+    id: str
+    statement: str
+    rationale: str | None = None
+    category: str = "general"
+    domain_terms: list[str] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    confidence: float = 0.5
+    status: RuleStatus = RuleStatus.INFERRED
+    tags: list[str] = Field(default_factory=list)
+    source_unit: str | None = None
+    model: str | None = None
+
+
+class GlossaryTerm(BaseModel):
+    term: str
+    definition: str
+    aliases: list[str] = Field(default_factory=list)
+    related_units: list[str] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+
+
+class RuleExtractionResult(BaseModel):
+    project_name: str
+    model: str
+    rules: list[BusinessRule] = Field(default_factory=list)
+    glossary: list[GlossaryTerm] = Field(default_factory=list)
+    units_analyzed: int = 0
+    units_skipped: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class ProjectMetrics(BaseModel):
     files: int = 0
     loc: int = 0

@@ -15,7 +15,9 @@ from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 
 app = typer.Typer(help="DevAnalyzer: analyze projects, build a knowledge graph, extract business rules.", no_args_is_help=True)
 graph_app = typer.Typer(help="Build and query the project knowledge graph.", no_args_is_help=True)
+rules_app = typer.Typer(help="Extract and review AI-inferred business rules.", no_args_is_help=True)
 app.add_typer(graph_app, name="graph")
+app.add_typer(rules_app, name="rules")
 console = Console()
 
 
@@ -198,6 +200,126 @@ def graph_query(
             raise typer.Exit(1)
         route = kg.shortest_path(a[0], b[0])
         console.print(" -> ".join(route) if route else "[yellow]No path[/yellow]")
+
+
+def _kb_path(project: Path) -> Path:
+    return _default_out(project.resolve()) / "kb.sqlite"
+
+
+def _render_rules(rules, title: str = "Business rules") -> None:
+    t = Table(title=title)
+    t.add_column("ID"), t.add_column("Status"), t.add_column("Cat."), t.add_column("Conf."), t.add_column("Statement"), t.add_column("Evidence")
+    for r in rules:
+        ev = r.evidence[0] if r.evidence else None
+        t.add_row(r.id, r.status.value, r.category, f"{r.confidence:.2f}", r.statement, f"{ev.file}:{ev.line_start}-{ev.line_end}" if ev else "")
+    console.print(t)
+
+
+@rules_app.command("extract")
+def rules_extract(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Max units to send to the LLM"),
+    stereotype: list[str] = typer.Option([], "--stereotype", "-s", help="Only these stereotypes (service, controller, entity...)"),
+    language: str = typer.Option("English", "--lang", help="Language for the rule statements (e.g. Spanish)"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached LLM responses"),
+):
+    """Infer business rules with the configured LLM and store them in the knowledge base."""
+    from devanalyzer.kb.store import KnowledgeBase
+    from devanalyzer.llm.business_rules import BusinessRuleExtractor
+    from devanalyzer.llm.provider import get_provider
+
+    settings = get_settings()
+    analysis = ProjectAnalyzer(settings).run(path)
+    out_dir = _default_out(path.resolve())
+    provider = get_provider(settings)
+    extractor = BusinessRuleExtractor(
+        provider,
+        settings,
+        cache_dir=None if no_cache else out_dir / "cache",
+        output_language=language,
+        progress=lambda fqn: console.print(f"[dim]analyzing {fqn}[/dim]"),
+    )
+    console.print(f"Provider: {provider.name}  Model: {provider.model}")
+    result = extractor.extract(analysis, path, stereotypes=set(stereotype) or None, limit=limit)
+    (out_dir / "rules.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    with KnowledgeBase(out_dir / "kb.sqlite") as kb:
+        counts = kb.ingest(result)
+    _render_rules(result.rules)
+    console.print(f"Units analyzed: {result.units_analyzed}  skipped: {result.units_skipped}  errors: {len(result.errors)}")
+    console.print(f"KB run #{counts['run_id']}: new={counts['new']} seen={counts['seen']} changed={counts['changed']}")
+    for err in result.errors[:10]:
+        console.print(f"[yellow]{err}[/yellow]")
+
+
+@rules_app.command("list")
+def rules_list(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    status: str | None = typer.Option(None, "--status"),
+    category: str | None = typer.Option(None, "--category"),
+    unit: str | None = typer.Option(None, "--unit", help="Filter by source unit (substring)"),
+    search: str | None = typer.Option(None, "--search", "-q"),
+):
+    """List business rules stored in the knowledge base."""
+    from devanalyzer.kb.store import KnowledgeBase
+
+    with KnowledgeBase(_kb_path(path)) as kb:
+        _render_rules(kb.rules(status=status, category=category, unit=unit, search=search))
+        console.print(json.dumps(kb.summary(), indent=2))
+
+
+@rules_app.command("review")
+def rules_review(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    rule_id: str = typer.Argument(..., help="Rule id, e.g. BR-1a2b3c4d5e"),
+    status: str = typer.Option(..., "--status", help="confirmed | rejected | inferred"),
+    note: str | None = typer.Option(None, "--note"),
+):
+    """Record a human review decision for a rule (persists across re-extractions)."""
+    from devanalyzer.core.models import RuleStatus
+    from devanalyzer.kb.store import KnowledgeBase
+
+    with KnowledgeBase(_kb_path(path)) as kb:
+        ok = kb.set_status(rule_id, RuleStatus(status), note)
+    console.print("[green]updated[/green]" if ok else f"[red]rule {rule_id} not found[/red]")
+
+
+@rules_app.command("glossary")
+def rules_glossary(path: Path = typer.Argument(..., exists=True), search: str | None = typer.Option(None, "-q")):
+    """Show the domain glossary inferred from the code."""
+    from devanalyzer.kb.store import KnowledgeBase
+
+    with KnowledgeBase(_kb_path(path)) as kb:
+        t = Table(title="Glossary")
+        t.add_column("Term"), t.add_column("Definition"), t.add_column("Units"), t.add_column("Rules")
+        for term in kb.terms(search=search):
+            t.add_row(term.term, term.definition, ", ".join(u.rsplit(".", 1)[-1] for u in term.related_units), str(len(term.rules)))
+        console.print(t)
+
+
+@app.command("vault")
+def vault_generate(
+    path: Path = typer.Argument(..., exists=True, help="Project root"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Obsidian vault directory (default: <project>/.devanalyzer/vault)"),
+    folder: str | None = typer.Option(None, "--folder", help="Sub-folder inside an existing vault to write into"),
+    include_rejected: bool = typer.Option(False, "--include-rejected"),
+):
+    """Generate or refresh an Obsidian vault with architecture, rules and glossary notes."""
+    from devanalyzer.kb.store import KnowledgeBase
+    from devanalyzer.obsidian.vault import ObsidianVault
+
+    analysis = ProjectAnalyzer().run(path)
+    kg = KnowledgeGraph.from_analysis(analysis)
+    kb_path = _kb_path(path)
+    rules, glossary, decisions = [], [], []
+    if kb_path.exists():
+        with KnowledgeBase(kb_path) as kb:
+            rules = [r for r in kb.rules(project=analysis.project_name) if include_rejected or r.status.value != "rejected"]
+            glossary = kb.terms(project=analysis.project_name)
+            decisions = kb.decisions(project=analysis.project_name)
+    vault_dir = out or (_default_out(path.resolve()) / "vault")
+    written = ObsidianVault(vault_dir, folder).generate(analysis, kg, rules, glossary, decisions)
+    console.print(f"[green]{len(written)} notes written to {vault_dir}[/green]  (rules: {len(rules)}, terms: {len(glossary)})")
+    console.print("Open the folder as a vault in Obsidian; start from the '<project> - Home' note.")
 
 
 if __name__ == "__main__":
