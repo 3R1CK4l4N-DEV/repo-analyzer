@@ -195,6 +195,19 @@ def create_server(project: Path, name: str = "devanalyzer"):
         return _dump(deps)
 
     @mcp.tool()
+    def get_flows(path_contains: str | None = None, writes_only: bool = False) -> str:
+        """End-to-end use-case flows per endpoint: layers traversed (controller/service/repository/entity), tables reached and business rules involved."""
+        from devanalyzer.graph.flows import build_flows
+
+        rules = []
+        if (ctx.out_dir / "kb.sqlite").is_file():
+            with ctx.kb() as kb:
+                rules = kb.rules()
+        flows = build_flows(ctx.analysis, ctx.graph, rules)
+        out = [f for f in flows if (not path_contains or path_contains in f.endpoint.path) and (not writes_only or f.writes)]
+        return _dump([{"flow": f.title, "handler": f.handler, "writes": f.writes, "layers": f.layers, "tables": f.tables, "rules": f.rule_ids} for f in out])
+
+    @mcp.tool()
     def list_tables(name: str | None = None) -> str:
         """Database tables reconstructed from migrations/schema files, with columns, foreign keys and the ORM entities mapped to them."""
         tables = [t for t in ctx.analysis.db_schema.tables if not name or name.lower() in t.name.lower()]

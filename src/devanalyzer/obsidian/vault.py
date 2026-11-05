@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind, RuleGroup
+from devanalyzer.graph.flows import Flow, build_flows, flow_mermaid
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 from devanalyzer.obsidian.mermaid import class_diagram, er_diagram, sequence_diagram
 
@@ -27,6 +28,7 @@ FOLDERS = {
     "decisions": "50 Decisions",
     "domains": "35 Domains",
     "data": "60 Data",
+    "flows": "70 Flows",
     "canvas": "canvas",
 }
 
@@ -120,6 +122,11 @@ class ObsidianVault:
             self._write(FOLDERS["data"], table.name, self._table_note(table, analysis))
         if analysis.db_schema.tables:
             self._write(FOLDERS["moc"], "Data Model", self._moc_data(analysis))
+        flows = build_flows(analysis, graph, rules)
+        for fl in flows:
+            self._write(FOLDERS["flows"], fl.title, self._flow_note(fl))
+        if flows:
+            self._write(FOLDERS["moc"], "Use Case Flows", self._moc_flows(flows))
 
         self._write(FOLDERS["moc"], "Architecture", self._moc_architecture(analysis, types, graph))
         self._write(FOLDERS["moc"], "Business Rules", self._moc_rules(rules, groups or []))
@@ -326,6 +333,49 @@ class ObsidianVault:
             lines += ["## Referenced by", ""] + [f"- [[{safe_name(t.name)}]] via `{fk.column}`" for t, fk in incoming] + [""]
         return fm, "\n".join(lines)
 
+    def _flow_note(self, fl: Flow) -> tuple[dict, str]:
+        fm = {
+            "type": "flow",
+            "http_method": fl.endpoint.http_method,
+            "path": fl.endpoint.path,
+            "handler": fl.handler,
+            "writes": fl.writes,
+            "tables": fl.tables,
+            "rules": len(fl.rule_ids),
+            "tags": ["devanalyzer", "flow", "writes" if fl.writes else "reads"],
+        }
+        lines = [
+            f"# {fl.title}",
+            "",
+            f"**Entry:** [[{safe_name(fl.title)}|{fl.title}]] → {self._link_fqn(fl.handler.rpartition('.')[0])}.`{fl.handler.rsplit('.', 1)[-1]}`",
+            f"**Kind:** {'write (mutates state)' if fl.writes else 'read'}",
+            "",
+            flow_mermaid(fl),
+            "",
+        ]
+        for layer in ("controller", "service", "component", "repository", "entity", "other"):
+            if layer in fl.layers:
+                lines += [f"## {layer.title()}", ""] + [f"- {self._link_fqn(f)}" for f in fl.layers[layer]] + [""]
+        if fl.tables:
+            lines += ["## Tables", ""] + [f"- [[{safe_name(t)}]]" for t in fl.tables] + [""]
+        if fl.rule_ids:
+            lines += (
+                ["## Business rules along this flow", ""] + [f"- {self._link_rule(self._rules_by_id[i])}" for i in fl.rule_ids if i in self._rules_by_id] + [""]
+            )
+        return fm, "\n".join(lines)
+
+    def _moc_flows(self, flows: list[Flow]) -> tuple[dict, str]:
+        fm = {"type": "moc", "tags": ["devanalyzer", "moc"]}
+        lines = ["# Use Case Flows", "", "| Flow | Kind | Services | Repositories | Tables | Rules |", "|---|---|---|---|---|---|"]
+        for fl in flows:
+            lines.append(
+                f"| [[{safe_name(fl.title)}\\|{fl.title}]] | {'write' if fl.writes else 'read'} | "
+                f"{', '.join(x.rsplit('.', 1)[-1] for x in fl.layers.get('service', []))} | "
+                f"{', '.join(x.rsplit('.', 1)[-1] for x in fl.layers.get('repository', []))} | {', '.join(fl.tables)} | {len(fl.rule_ids)} |"
+            )
+        lines += ["", "```dataview", 'TABLE http_method, writes, tables, rules FROM "' + self._rel(FOLDERS["flows"]) + '" SORT path', "```", ""]
+        return fm, "\n".join(lines)
+
     def _moc_data(self, analysis: ProjectAnalysis) -> tuple[dict, str]:
         fm = {"type": "moc", "tags": ["devanalyzer", "moc"]}
         lines = ["# Data Model", "", f"{len(analysis.db_schema.tables)} tables from: " + ", ".join(f"`{s}`" for s in analysis.db_schema.sources[:10]), ""]
@@ -456,6 +506,7 @@ class ObsidianVault:
             "- [[Business Rules]]",
             "- [[Glossary]]",
             *(["- [[Data Model]]"] if analysis.db_schema.tables else []),
+            *(["- [[Use Case Flows]]"] if analysis.endpoints else []),
             "",
             "## Stats",
             "",
