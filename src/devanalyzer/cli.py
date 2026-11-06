@@ -243,6 +243,7 @@ def rules_extract(
     no_cache: bool = typer.Option(False, "--no-cache", help="Ignore cached LLM responses"),
     workers: int | None = typer.Option(None, "--workers", "-w", help="Parallel LLM calls (default: 1 for ollama, 4 for cloud providers)"),
     verify: bool = typer.Option(False, "--verify", help="Second LLM pass that audits each rule against its evidence (rejects unsupported/technical ones)"),
+    no_rag: bool = typer.Option(False, "--no-rag", help="Do not add semantically related knowledge (from `devanalyzer index`) to prompts"),
 ):
     """Infer business rules with the configured LLM and store them in the knowledge base."""
     import itertools
@@ -257,12 +258,26 @@ def rules_extract(
     provider = get_provider(settings)
     workers = workers or (1 if provider.name == "ollama" else 4)
     counter = itertools.count(1)
+    retriever = None
+    rag_kb = None
+    if not no_rag and (out_dir / "kb.sqlite").exists():
+        from devanalyzer.kb.semantic import SemanticIndex, get_embedding_provider
+
+        rag_kb = KnowledgeBase(out_dir / "kb.sqlite")
+        try:
+            sem = SemanticIndex(rag_kb, get_embedding_provider(settings), analysis.project_name)
+            if sem.count():
+                retriever = sem.search
+                console.print(f"RAG: {sem.count()} embeddings available as context")
+        except Exception as exc:  # embeddings are optional; never block extraction
+            console.print(f"[dim]RAG disabled: {exc}[/dim]")
     extractor = BusinessRuleExtractor(
         provider,
         settings,
         cache_dir=None if no_cache else out_dir / "cache",
         output_language=language,
         progress=lambda fqn: console.print(f"[dim][{next(counter)}] {fqn}[/dim]"),
+        retriever=retriever,
     )
     console.print(f"Provider: {provider.name}  Model: {provider.model}  Workers: {workers}")
     result = extractor.extract(analysis, path, stereotypes=set(stereotype) or None, limit=limit, workers=workers)
@@ -274,6 +289,8 @@ def rules_extract(
         result = extractor.verify(result, root=path, workers=workers, judge=judge)
         rejected = sum(1 for r in result.rules if r.status.value == "rejected")
         console.print(f"Verifier: {len(result.rules) - rejected} kept, {rejected} rejected as unsupported/technical")
+    if rag_kb is not None:
+        rag_kb.close()
     (out_dir / "rules.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
     with KnowledgeBase(out_dir / "kb.sqlite") as kb:
         counts = kb.ingest(result)

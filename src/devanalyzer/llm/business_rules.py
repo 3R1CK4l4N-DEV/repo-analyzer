@@ -99,12 +99,15 @@ class BusinessRuleExtractor:
         cache_dir: Path | None = None,
         output_language: str = "English",
         progress: Callable[[str], None] | None = None,
+        retriever: Callable[[str, int], list] | None = None,
     ):
         self.provider = provider
         self.settings = settings or get_settings()
         self.cache_dir = cache_dir
         self.output_language = output_language
         self.progress = progress or (lambda _msg: None)
+        # Optional semantic retriever (query, limit) -> hits with .doc_id/.kind/.title/.snippet (RAG context, R4+G1)
+        self.retriever = retriever
         self.template = PROMPT_PATH.read_text(encoding="utf-8")
         self._line_cache: dict[Path, list[str]] = {}
         self._index_cache: tuple[ProjectAnalysis, dict[str, CodeUnit]] | None = None
@@ -333,6 +336,27 @@ class BusinessRuleExtractor:
             cols = ", ".join(f"{c.name}{' PK' if c.primary_key else ''}{'' if c.nullable else ' NOT NULL'}" for c in t.columns[:16])
             fks = "; ".join(f"{fk.column} -> {fk.ref_table}" for fk in t.foreign_keys)
             blocks.append(f"- persisted in table `{t.name}`: {cols}" + (f"\n    foreign keys: {fks}" if fks else ""))
+        if self.retriever is not None:
+            query = " ".join(
+                filter(
+                    None,
+                    [unit.name, unit.docstring or "", " ".join(c.name for c in unit.children if c.kind in (CodeUnitKind.METHOD, CodeUnitKind.FUNCTION))[:300]],
+                )
+            )
+            try:
+                hits = self.retriever(query, 8)
+            except Exception:
+                hits = []
+            related = [
+                h
+                for h in hits
+                if h.doc_id != unit.fqn
+                and not h.doc_id.startswith(unit.fqn + ".")
+                and h.kind in ("business_rule", "glossary_term", "class", "table", "endpoint")
+            ][:5]
+            if related:
+                blocks.append("- semantically related knowledge (already known; avoid restating identical rules, use it for consistent domain terms):")
+                blocks += [f"    · [{h.kind}] {h.title}: {h.snippet[:140]}" for h in related]
         if not blocks:
             return ""
         return (
