@@ -34,7 +34,7 @@ class PyFile:
             if base not in imp.names:
                 continue
             original = imp.names[base]
-            target_module = self._absolute(imp)
+            target_module = self.absolute_module(imp)
             candidates = [f"{target_module}.{original}" if target_module else original]
             # `import pkg.mod` / `from pkg import mod` styles
             if target_module and f"{target_module}.{original}" in project_modules:
@@ -47,12 +47,12 @@ class PyFile:
                     return c
         return None
 
-    def _absolute(self, imp: ImportSpec) -> str:
+    def absolute_module(self, imp: ImportSpec) -> str:
+        """Resolve an import relative to this file's package, including __init__.py."""
         if imp.level == 0:
             return imp.module
         parts = self.module.split(".")
-        # relative imports resolve from the package (strip module name; __init__ keeps package)
-        base = parts if parts[-1] == "__init__" else parts[:-1]
+        base = parts[:-1]
         base = base[: len(base) - (imp.level - 1)] if imp.level > 1 else base
         return ".".join(base + ([imp.module] if imp.module else []))
 

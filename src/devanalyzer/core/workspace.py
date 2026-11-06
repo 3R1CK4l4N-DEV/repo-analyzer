@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,7 @@ from devanalyzer.config import Settings, get_settings
 from devanalyzer.core.analyzer import ProjectAnalyzer
 from devanalyzer.core.models import ProjectAnalysis
 from devanalyzer.core.reader import ProjectReader
+from devanalyzer.core.source_text import without_comments
 
 MANIFESTS = ("pom.xml", "build.gradle", "build.gradle.kts", "package.json", "pyproject.toml", "requirements.txt")
 PATH_LITERAL_RE = re.compile(r"""["'`]((?:https?://[\w.\-:]+)?(/[A-Za-z0-9_\-{}:$./]*[A-Za-z0-9_}])+)["'`]""")
@@ -62,7 +64,8 @@ class WorkspaceConfig(BaseModel):
     @classmethod
     def load(cls, directory: str | Path) -> WorkspaceConfig:
         directory = Path(directory)
-        cfg = directory / "devanalyzer.workspace.json"
+        cfg = directory if directory.is_file() else directory / "devanalyzer.workspace.json"
+        directory = cfg.parent
         if cfg.is_file():
             data = json.loads(cfg.read_text(encoding="utf-8"))
             projects = []
@@ -98,7 +101,7 @@ class WorkspaceAnalysis(BaseModel):
 
 def _norm_path(path: str) -> str:
     path = re.sub(r"https?://[^/]+", "", path)
-    path = re.sub(r"\{[^}]*\}|:[A-Za-z_]\w*|\$\{[^}]*\}", "*", path)
+    path = re.sub(r"\$\{[^}]*\}|\{[^}]*\}|:[A-Za-z_]\w*", "*", path)
     return re.sub(r"/+", "/", path).rstrip("/") or "/"
 
 
@@ -123,7 +126,11 @@ class WorkspaceAnalyzer:
         reader = ProjectReader(self.settings)
         for ref in config.projects:
             self.analyses[ref.name] = ProjectAnalyzer(self.settings).run(ref.path)
-            self.files[ref.name] = [f for f in reader.read(ref.path) if f.language is not None or f.extension in (".yml", ".yaml", ".properties", ".json")]
+            self.files[ref.name] = [
+                f.model_copy(update={"content": without_comments(f.content, f.language, f.extension)})
+                for f in reader.read(ref.path)
+                if f.language is not None or f.extension in (".yml", ".yaml", ".properties", ".json")
+            ]
         ws = WorkspaceAnalysis(name=config.name)
         for ref in config.projects:
             a = self.analyses[ref.name]
@@ -172,12 +179,16 @@ class WorkspaceAnalyzer:
                 for m in PATH_LITERAL_RE.finditer(content):
                     literal = m.group(1)
                     norm = _norm_path(literal)
-                    if norm in own_paths or norm.count("/") < 1 or literal.endswith((".js", ".css", ".png", ".html", ".svg", ".ts", ".java", ".py")):
+                    if norm.count("/") < 1 or literal.endswith((".js", ".css", ".png", ".html", ".svg", ".ts", ".java", ".py")):
                         continue
                     host_target = None
                     if literal.startswith("http"):
-                        host = re.match(r"https?://([\w.\-]+)", literal).group(1)
-                        host_target = self._project_for_name(host, names)
+                        host_target = self._project_for_name(literal, names)
+                        if host_target is None:
+                            ws.unresolved_calls.append({"project": ref.name, "url": literal, "file": f.rel_path})
+                            continue
+                    elif norm in own_paths:
+                        continue
                     matched = False
                     for other in config.projects:
                         if other.name == ref.name or (host_target and other.name != host_target):
@@ -205,14 +216,18 @@ class WorkspaceAnalyzer:
 
     @staticmethod
     def _project_for_name(name: str, names: dict[str, str]) -> str | None:
-        key = re.sub(r"^https?://", "", name).split(":")[0].split("/")[0].lower()
-        for candidate in (key, key.replace("-service", ""), key.replace("_", "-")):
-            if candidate in names:
-                return names[candidate]
-        for low, real in names.items():
-            if low in key or key in low:
-                return real
-        return None
+        try:
+            key = (urlsplit(name if "://" in name else "//" + name).hostname or "").lower()
+        except ValueError:
+            return None
+        if key in names:
+            return names[key]
+
+        def alias(value: str) -> str:
+            return value.replace("_", "-").removesuffix("-service")
+
+        matches = {real for low, real in names.items() if alias(low) == alias(key)}
+        return next(iter(matches)) if len(matches) == 1 else None
 
     # ------------------------------------------------------------ events
     def _event_links(self, config: WorkspaceConfig, ws: WorkspaceAnalysis) -> list[ServiceLink]:

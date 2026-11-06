@@ -103,28 +103,34 @@ def resolve_django_endpoints(parsed: list[PyFile], units_by_fqn: dict[str, CodeU
     url_modules = {pf.module: pf for pf in parsed if pf.module.endswith("urls") or pf.source.name == "urls.py"}
     if not url_modules:
         return []
-    # prefix per urls module following include() chains from the root
-    prefixes: dict[str, str] = {}
     parsed_urls = {mod: parse_urls(pf) for mod, pf in url_modules.items()}
-    included = {inc_mod for _, incs, _ in parsed_urls.values() for _, inc_mod in incs}
-    roots = [m for m in url_modules if m not in included and not any(m.endswith("." + i) for i in included)]
+
+    def resolve_module(name: str) -> str | None:
+        if name in url_modules:
+            return name
+        matches = [m for m in url_modules if m.endswith("." + name) or name.endswith("." + m)]
+        return matches[0] if len(matches) == 1 else None
+
+    included = {resolve_module(inc_mod) for _, incs, _ in parsed_urls.values() for _, inc_mod in incs}
+    roots = [m for m in url_modules if m not in included]
+    mounts: list[tuple[str, str]] = []
+    seen_mounts: set[tuple[str, str]] = set()
+
+    def mount(mod: str, prefix: str, ancestors: set[str]) -> None:
+        if mod in ancestors or (mod, prefix) in seen_mounts:
+            return
+        seen_mounts.add((mod, prefix))
+        mounts.append((mod, prefix))
+        for inc_prefix, inc_mod in parsed_urls[mod][1]:
+            if target := resolve_module(inc_mod):
+                mount(target, _join(prefix, inc_prefix), ancestors | {mod})
+
     for root in roots or list(url_modules):
-        prefixes.setdefault(root, "")
-    changed = True
-    while changed:
-        changed = False
-        for mod, (_, incs, _) in parsed_urls.items():
-            if mod not in prefixes:
-                continue
-            for inc_prefix, inc_mod in incs:
-                target = next((m for m in url_modules if m == inc_mod or m.endswith("." + inc_mod) or inc_mod.endswith(m)), None)
-                if target and target not in prefixes:
-                    prefixes[target] = _join(prefixes[mod], inc_prefix)
-                    changed = True
+        mount(root, "", set())
     endpoints: list[Endpoint] = []
-    for mod, (routes, _, registrations) in parsed_urls.items():
+    for mod, base in mounts:
+        routes, _, registrations = parsed_urls[mod]
         pf = url_modules[mod]
-        base = prefixes.get(mod, "")
         for pattern, ref, line in routes:
             handler = _resolve_view(ref, pf, units_by_fqn)
             unit = units_by_fqn.get(handler) if handler else None
@@ -137,17 +143,18 @@ def resolve_django_endpoints(parsed: list[PyFile], units_by_fqn: dict[str, CodeU
             handler = _resolve_view(ref, pf, units_by_fqn) or ref
             unit = units_by_fqn.get(handler)
             actions = {c.name for c in unit.children if c.kind == CodeUnitKind.METHOD} if unit else set()
+            bases = {b.rsplit(".", 1)[-1] for b in unit.extends} if unit else set()
+            if "ModelViewSet" in bases:
+                actions.update(VIEWSET_ACTIONS)
+            elif "ReadOnlyModelViewSet" in bases:
+                actions.update(("list", "retrieve"))
             for action, verb in VIEWSET_ACTIONS.items():
-                if not actions or action in actions or _is_model_viewset(unit):
+                if action in actions:
                     path = _join(base, prefix) if action in ("list", "create") else _join(_join(base, prefix), "{pk}")
                     endpoints.append(
                         Endpoint(http_method=verb, path=path, handler=f"{handler}.{action}", file=pf.source.rel_path, line=line, framework="Django REST")
                     )
     return endpoints
-
-
-def _is_model_viewset(unit: CodeUnit | None) -> bool:
-    return bool(unit) and any(b.rsplit(".", 1)[-1] in ("ModelViewSet", "ReadOnlyModelViewSet") for b in unit.extends)
 
 
 def _methods_for(unit: CodeUnit | None) -> list[str]:
@@ -186,7 +193,7 @@ def _resolve_view(ref: str, pf: PyFile, units_by_fqn: dict[str, CodeUnit]) -> st
     for imp in pf.imports:
         if first not in imp.names:
             continue
-        module = pf._absolute(imp)
+        module = pf.absolute_module(imp)
         original = imp.names[first]
         candidates = [f"{module}.{original}.{rest}" if rest else f"{module}.{original}", f"{original}.{rest}" if rest else original]
         if module:

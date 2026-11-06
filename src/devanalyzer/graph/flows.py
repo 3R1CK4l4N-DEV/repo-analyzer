@@ -7,6 +7,7 @@ have no node, so the repository type is reached through the field dependency).
 
 from __future__ import annotations
 
+import re
 from collections import deque
 
 from pydantic import BaseModel, Field
@@ -43,6 +44,14 @@ class Flow(BaseModel):
 
 
 WRITE_HINTS = ("save", "update", "delete", "remove", "persist", "insert", "create", "merge", "flush", "withdraw", "deposit", "approve", "cancel", "close")
+TECHNICAL_TARGETS = {"connection", "cursor", "socket", "stream", "logger", "log", "file"}
+
+
+def _is_write_call(call: str) -> bool:
+    receiver, _, name = call.rpartition(".")
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower().replace("_", " ").split()
+    receiver_words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", receiver).lower().replace("_", " ").split()
+    return bool(words) and words[0] in WRITE_HINTS and not (set(words[1:]) & TECHNICAL_TARGETS or set(receiver_words) & TECHNICAL_TARGETS)
 
 
 def _owner(fqn: str) -> str:
@@ -94,9 +103,9 @@ def build_flows(analysis: ProjectAnalysis, graph: KnowledgeGraph, rules: list[Bu
             data = g.nodes[node]
             kind = data.get("kind")
             type_fqn = node if kind in TYPE_KINDS else _owner(node)
-            if kind == "method":
-                names = [node.rsplit(".", 1)[-1].lower()] + [c.rsplit(".", 1)[-1].lower() for c in raw_calls.get(node, [])]
-                if any(any(h in n for h in WRITE_HINTS) for n in names):
+            if kind in ("method", "function"):
+                names = [node.rsplit(".", 1)[-1]] + raw_calls.get(node, [])
+                if any(_is_write_call(n) for n in names):
                     flow.writes = True
             if type_fqn in g and type_fqn not in visited_types and type_fqn != owner:
                 tdata = g.nodes[type_fqn]

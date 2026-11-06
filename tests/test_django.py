@@ -1,3 +1,5 @@
+import shutil
+
 from devanalyzer.core.analyzer import ProjectAnalyzer
 from devanalyzer.core.models import RelationKind
 
@@ -26,3 +28,18 @@ def test_django_views_models_and_urls(settings, fixtures):
 
     rels = {(r.source, r.target, r.kind) for r in analysis.relations}
     assert ("shop.owners.views.AdoptView", "shop.owners.models.Owner", RelationKind.IMPORTS) in rels
+
+
+def test_read_only_viewsets_and_multiple_url_mounts(settings, fixtures, tmp_path):
+    root = tmp_path / "project"
+    shutil.copytree(fixtures / "python_django", root)
+    views = root / "shop/owners/views.py"
+    views.write_text(views.read_text(encoding="utf-8").replace("ModelViewSet", "ReadOnlyModelViewSet"), encoding="utf-8")
+    urls = root / "shop/urls.py"
+    urls.write_text(
+        'from django.urls import path, include\nurlpatterns = [path("api/", include("shop.owners.urls")), path("v2/", include("shop.owners.urls"))]\n',
+        encoding="utf-8",
+    )
+    endpoints = ProjectAnalyzer(settings).run(root).endpoints
+    pets = {(e.http_method, e.path) for e in endpoints if "/pets" in e.path}
+    assert pets == {("GET", f"/{prefix}/pets{suffix}") for prefix in ("api", "v2") for suffix in ("", "/{pk}")}

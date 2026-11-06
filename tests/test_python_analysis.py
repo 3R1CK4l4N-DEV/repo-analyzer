@@ -73,3 +73,16 @@ def test_self_analysis_dogfooding(settings):
     assert "devanalyzer.graph.knowledge_graph.KnowledgeGraph" in fqns
     rels = {(r.source, r.target) for r in py.relations if r.kind == RelationKind.DEPENDS_ON}
     assert ("devanalyzer.core.analyzer.ProjectAnalyzer", "devanalyzer.core.reader.ProjectReader") in rels
+
+
+def test_relative_import_in_package_init(reader, tmp_path):
+    from devanalyzer.languages.python.parser import PythonParser, package_dirs
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from .service import Service\n", encoding="utf-8")
+    (pkg / "service.py").write_text("class Service:\n    pass\n", encoding="utf-8")
+    sources = reader.read(tmp_path)
+    parser = PythonParser(package_dirs([f.rel_path for f in sources]))
+    init = parser.parse(next(f for f in sources if f.name == "__init__.py"))
+    assert init.resolve_name("Service", {"pkg", "pkg.__init__", "pkg.service"}) == "pkg.service.Service"

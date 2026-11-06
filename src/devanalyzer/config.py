@@ -9,6 +9,7 @@ DEFAULT_IGNORE_DIRS = {
     "venv",
     "env",
     "node_modules",
+    ".next",
     "target",
     "build",
     "dist",

@@ -42,3 +42,22 @@ def test_vault_writes_flow_notes(spring_analysis, tmp_path):
     assert "flowchart LR" in note and "## Repository" in note and "writes: true" in note
     moc = (tmp_path / "00 MOC" / "Use Case Flows.md").read_text(encoding="utf-8")
     assert "| [[POST _accounts_{id}_deposit\\|POST /accounts/{id}/deposit]] | write |" in moc
+
+
+@pytest.mark.parametrize("call", ["closeConnection", "createLogger", "saveFile", "findByCreatedAt", "isClosed", "getUpdatedOrders"])
+def test_technical_calls_do_not_mark_flows_as_writes(spring_analysis, call):
+    analysis = spring_analysis.model_copy(deep=True)
+    for unit in analysis.units:
+        for child in unit.children:
+            if child.name in ("list", "findAll"):
+                child.calls.append(call)
+    flows = build_flows(analysis, KnowledgeGraph.from_analysis(analysis))
+    assert next(f for f in flows if f.title == "GET /accounts").writes is False
+
+
+def test_function_handler_mutation_is_detected(settings, fixtures):
+    analysis = ProjectAnalyzer(settings).run(fixtures / "python_fastapi")
+    adjust = next(u for u in analysis.units if u.fqn == "app.api.adjust")
+    adjust.calls.append("repository.save")
+    flows = build_flows(analysis, KnowledgeGraph.from_analysis(analysis))
+    assert next(f for f in flows if f.handler == adjust.fqn).writes

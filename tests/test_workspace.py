@@ -1,6 +1,10 @@
 import json
 
-from devanalyzer.core.workspace import WorkspaceAnalyzer, WorkspaceConfig, _norm_path, _path_matches, workspace_markdown
+import pytest
+
+from devanalyzer.core.models import EXTENSION_LANGUAGE, Endpoint, LanguageAnalysis, ProjectAnalysis, SourceFile
+from devanalyzer.core.source_text import without_comments
+from devanalyzer.core.workspace import WorkspaceAnalysis, WorkspaceAnalyzer, WorkspaceConfig, _norm_path, _path_matches, workspace_markdown
 
 
 def test_path_matching_normalises_params_and_prefixes():
@@ -10,6 +14,79 @@ def test_path_matching_normalises_params_and_prefixes():
     assert _path_matches("/orders/:id", "/orders/{id}")
     assert not _path_matches("/orders", "/invoices")
     assert not _path_matches("/x", "/")  # single-segment roots never match
+    assert _path_matches("/orders/${orderId}", "/orders/{id}")
+
+
+def test_project_names_require_unambiguous_aliases():
+    resolve = WorkspaceAnalyzer._project_for_name
+    names = {"orders": "orders", "orders-legacy": "orders-legacy", "preorders": "preorders"}
+    assert resolve("http://orders-legacy:8080/x", names) == "orders-legacy"
+    assert resolve("orders-service", names) == "orders"
+    assert resolve("orders-legacy-service", names) == "orders-legacy"
+    assert resolve("myorders", names) is None
+    assert resolve("ord", names) is None
+    assert resolve("orders.example.com", names) is None
+    assert resolve("http://[broken", names) is None
+    assert resolve("ORDERS_SERVICE", names) == "orders"
+    assert resolve("orders_service", {"orders-service": "a", "orders_service": "b"}) == "b"
+
+
+@pytest.mark.parametrize("extension", [".java", ".kt", ".ts", ".py"])
+def test_workspace_ignores_comments_preserves_urls_and_evidence(settings, extension):
+    language = EXTENSION_LANGUAGE[extension]
+    comment = "# " if extension == ".py" else "// "
+    producer = (
+        comment
+        + 'client.get("http://billing/invoices"); kafka.send("legacy");\n'
+        + ('"""' if extension == ".py" else "/*")
+        + '\n kafka.send("obsolete");\n'
+        + ('"""' if extension == ".py" else "*/")
+        + '\nclient.get("http://billing/invoices");\n'
+        + 'kafka.send("orders.placed");\n'
+        + 'client.get("http://external.example/invoices");\n'
+    )
+    consumer = 'bus.subscribe("orders.placed");\nbus.subscribe("legacy");\nbus.subscribe("obsolete");\n'
+    analyzer = WorkspaceAnalyzer(settings)
+    config = WorkspaceConfig.model_validate({"projects": [{"name": "orders", "path": "orders"}, {"name": "billing", "path": "billing"}]})
+    analyzer.analyses = {
+        name: ProjectAnalysis(
+            project_name=name,
+            project_path=name,
+            languages=[
+                LanguageAnalysis(
+                    language=language, confidence=1, endpoints=[Endpoint(http_method="GET", path="/invoices", handler="X.get", file="X" + extension, line=1)]
+                )
+            ]
+            if name == "billing"
+            else [],
+        )
+        for name in ("orders", "billing")
+    }
+    analyzer.files = {
+        name: [
+            SourceFile(
+                name="X" + extension,
+                path="X" + extension,
+                rel_path="X" + extension,
+                extension=extension,
+                language=language,
+                content=without_comments(text, language),
+            )
+        ]
+        for name, text in (("orders", producer), ("billing", consumer))
+    }
+    ws = WorkspaceAnalysis(name="test")
+    http = analyzer._http_links(config, ws)
+    events = analyzer._event_links(config, ws)
+    assert [(e.source, e.target, e.evidence_line) for e in http] == [("orders", "billing", 5)]
+    assert [(e.label, e.evidence_line) for e in events] == [("orders.placed", 6)]
+    assert ws.unresolved_calls == [{"project": "orders", "url": "http://external.example/invoices", "file": "X" + extension}]
+
+
+def test_workspace_accepts_explicit_config_path(tmp_path):
+    cfg = tmp_path / "devanalyzer.workspace.json"
+    cfg.write_text('{"projects":[{"path":"billing"}]}', encoding="utf-8")
+    assert WorkspaceConfig.load(cfg) == WorkspaceConfig.load(tmp_path)
 
 
 def test_workspace_discovery_and_links(settings, fixtures, tmp_path):

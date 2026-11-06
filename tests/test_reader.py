@@ -23,6 +23,13 @@ def test_skips_ignored_dirs_and_large_files(tmp_path):
     assert names == {"keep.js"}
 
 
+def test_skips_next_build_output(tmp_path, reader):
+    (tmp_path / ".next").mkdir()
+    (tmp_path / ".next" / "page.js").write_text("generated")
+    (tmp_path / "page.js").write_text("source")
+    assert [f.rel_path for f in reader.read(tmp_path)] == ["page.js"]
+
+
 def test_respects_gitignore(tmp_path):
     (tmp_path / ".gitignore").write_text("generated/\n*.log\n!important.log\n")
     (tmp_path / "generated").mkdir()
