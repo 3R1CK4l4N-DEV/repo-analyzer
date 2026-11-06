@@ -208,6 +208,26 @@ def create_server(project: Path, name: str = "devanalyzer"):
         return _dump([{"flow": f.title, "handler": f.handler, "writes": f.writes, "layers": f.layers, "tables": f.tables, "rules": f.rule_ids} for f in out])
 
     @mcp.tool()
+    def get_workspace_links() -> str:
+        """Other services this project talks to (HTTP, events, shared tables) according to the last `devanalyzer workspace` run."""
+        from devanalyzer.core.workspace_lookup import find_workspace, links_for, project_name_in
+
+        ws = find_workspace(ctx.project)
+        if ws is None:
+            return _dump({"error": "no workspace analysis found; run `devanalyzer workspace <parent-dir>` or set DEVANALYZER_WORKSPACE"})
+        me = project_name_in(ws, ctx.project)
+        links = links_for(ws, me) if me else {"outgoing": [], "incoming": []}
+        return _dump(
+            {
+                "workspace": ws.name,
+                "service": me,
+                "services": [p["name"] for p in ws.projects],
+                "topics": ws.topics,
+                **{k: [x.model_dump() for x in v] for k, v in links.items()},
+            }
+        )
+
+    @mcp.tool()
     def list_tables(name: str | None = None) -> str:
         """Database tables reconstructed from migrations/schema files, with columns, foreign keys and the ORM entities mapped to them."""
         tables = [t for t in ctx.analysis.db_schema.tables if not name or name.lower() in t.name.lower()]

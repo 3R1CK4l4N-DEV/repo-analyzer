@@ -47,3 +47,30 @@ def test_workspace_discovery_and_links(settings, fixtures, tmp_path):
     assert cfg.name == "shop" and [p.name for p in cfg.projects] == ["orders", "billing-service"]
     ws2 = WorkspaceAnalyzer(settings).run(cfg)
     assert any(link.kind == "http" and link.source == "orders" and link.target == "billing-service" for link in ws2.links)
+
+
+def test_vault_related_services_and_lookup(settings, fixtures, tmp_path, monkeypatch):
+    import shutil
+
+    from devanalyzer.core.analyzer import ProjectAnalyzer
+    from devanalyzer.core.workspace_lookup import find_workspace, links_for, project_name_in
+    from devanalyzer.graph.knowledge_graph import KnowledgeGraph
+    from devanalyzer.obsidian.vault import ObsidianVault
+
+    wsdir = tmp_path / "shop"
+    shutil.copytree(fixtures / "workspace", wsdir)
+    ws = WorkspaceAnalyzer(settings).run(WorkspaceConfig.load(wsdir))
+    (wsdir / ".devanalyzer").mkdir()
+    (wsdir / ".devanalyzer" / "workspace.json").write_text(ws.model_dump_json(), encoding="utf-8")
+    monkeypatch.delenv("DEVANALYZER_WORKSPACE", raising=False)
+
+    orders = wsdir / "orders-service"
+    found = find_workspace(orders)
+    assert found is not None and project_name_in(found, orders) == "orders-service"
+    assert {x.target for x in links_for(found, "orders-service")["outgoing"]} == {"billing-service"}
+
+    analysis = ProjectAnalyzer(settings).run(orders)
+    ObsidianVault(tmp_path / "vault").generate(analysis, KnowledgeGraph.from_analysis(analysis))
+    note = (tmp_path / "vault" / "00 MOC" / "Related Services.md").read_text(encoding="utf-8")
+    assert "billing-service" in note and "orders.placed" in note and "flowchart LR" in note
+    assert "[[Related Services]]" in (tmp_path / "vault" / "orders-service - Home.md").read_text(encoding="utf-8")

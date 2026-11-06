@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from devanalyzer.core.models import BusinessRule, CodeUnit, CodeUnitKind, GlossaryTerm, ProjectAnalysis, RelationKind, RuleGroup
+from devanalyzer.core.workspace_lookup import find_workspace, links_for, project_name_in
 from devanalyzer.graph.flows import Flow, build_flows, flow_mermaid
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 from devanalyzer.obsidian.mermaid import class_diagram, er_diagram, sequence_diagram
@@ -122,6 +123,9 @@ class ObsidianVault:
             self._write(FOLDERS["data"], table.name, self._table_note(table, analysis))
         if analysis.db_schema.tables:
             self._write(FOLDERS["moc"], "Data Model", self._moc_data(analysis))
+        ws = find_workspace(analysis.project_path)
+        if ws and (me := project_name_in(ws, analysis.project_path)):
+            self._write(FOLDERS["moc"], "Related Services", self._related_services(ws, me))
         flows = build_flows(analysis, graph, rules)
         for fl in flows:
             self._write(FOLDERS["flows"], fl.title, self._flow_note(fl))
@@ -364,6 +368,27 @@ class ObsidianVault:
             )
         return fm, "\n".join(lines)
 
+    def _related_services(self, ws, me: str) -> tuple[dict, str]:
+        from devanalyzer.core.workspace import workspace_mermaid
+
+        fm = {"type": "moc", "workspace": ws.name, "service": me, "tags": ["devanalyzer", "moc", "workspace"]}
+        links = links_for(ws, me)
+        lines = [f"# Related Services — {me}", "", f"Workspace **{ws.name}** ({len(ws.projects)} services)", "", workspace_mermaid(ws), ""]
+        for title, items, fmt in (
+            (
+                "Calls / publishes to",
+                links["outgoing"],
+                lambda x: f"- **{x.target}** · {x.kind} `{x.label}`" + (f" — `{x.evidence_file}:{x.evidence_line}`" if x.evidence_file else ""),
+            ),
+            (
+                "Called / consumed by",
+                links["incoming"],
+                lambda x: f"- **{x.source}** · {x.kind} `{x.label}`" + (f" — `{x.evidence_file}:{x.evidence_line}`" if x.evidence_file else ""),
+            ),
+        ):
+            lines += [f"## {title}", ""] + ([fmt(x) for x in items] or ["_none detected_"]) + [""]
+        return fm, "\n".join(lines)
+
     def _moc_flows(self, flows: list[Flow]) -> tuple[dict, str]:
         fm = {"type": "moc", "tags": ["devanalyzer", "moc"]}
         lines = ["# Use Case Flows", "", "| Flow | Kind | Services | Repositories | Tables | Rules |", "|---|---|---|---|---|---|"]
@@ -507,6 +532,7 @@ class ObsidianVault:
             "- [[Glossary]]",
             *(["- [[Data Model]]"] if analysis.db_schema.tables else []),
             *(["- [[Use Case Flows]]"] if analysis.endpoints else []),
+            *(["- [[Related Services]]"] if find_workspace(analysis.project_path) else []),
             "",
             "## Stats",
             "",
