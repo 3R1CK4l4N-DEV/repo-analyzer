@@ -13,7 +13,7 @@ Classify the rule:
 - "supported": the evidence clearly implements or enforces this rule (annotations such as @Pattern, @NotBlank, @Size, validators, if/throw guards and comparisons all count as enforcement).
 - "partial": the evidence is related but the statement overstates, inverts or adds details not present.
 - "unsupported": the evidence does not show this rule at all.
-- "technical": it is true but it is a technical/framework/demo behaviour, not something the business cares about.
+- "technical": it is true but it is a technical/framework/demo behaviour, not something the business cares about. ALWAYS "technical" when the statement is about: ids/primary keys being unique, generated or immutable; date/number FORMATS (@DateTimeFormat, patterns like yyyy-MM-dd); ORM/column mapping; serialization; transactions; HTTP status codes; demo or error-handling controllers (e.g. a route that only throws to showcase errors).
 
 Rules for the corrected statement:
 - Only used when verdict is "partial".

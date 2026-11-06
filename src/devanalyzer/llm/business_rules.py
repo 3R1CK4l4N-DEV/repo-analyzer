@@ -74,6 +74,83 @@ class _LLMVerdict(BaseModel):
         self.confidence = max(0.0, min(1.0, self.confidence))
 
 
+_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "of",
+    "to",
+    "be",
+    "is",
+    "must",
+    "not",
+    "no",
+    "el",
+    "la",
+    "los",
+    "las",
+    "de",
+    "del",
+    "un",
+    "una",
+    "debe",
+    "ser",
+    "que",
+    "y",
+    "o",
+    "en",
+    "para",
+    "por",
+    "se",
+    "puede",
+    "pueden",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return {t for t in re.findall(r"[a-z0-9]+", text) if t not in _STOPWORDS and len(t) > 1}
+
+
+def _same_evidence(a: BusinessRule, b: BusinessRule, tolerance: int = 2) -> bool:
+    for ea in a.evidence:
+        for eb in b.evidence:
+            if ea.file == eb.file and ea.line_start <= eb.line_end + tolerance and eb.line_start <= ea.line_end + tolerance:
+                return True
+    return False
+
+
+def merge_near_duplicates(rules: list[BusinessRule], min_jaccard: float = 0.6) -> list[BusinessRule]:
+    """Structural (no-LLM) merge of rules that restate each other: same evidence span + same category,
+    or highly overlapping wording. The survivor keeps every evidence and the highest confidence."""
+    merged: list[BusinessRule] = []
+    for rule in rules:
+        toks = _tokens(rule.statement)
+        target = None
+        for existing in merged:
+            etoks = _tokens(existing.statement)
+            jaccard = len(toks & etoks) / len(toks | etoks) if toks | etoks else 0.0
+            same_span = _same_evidence(rule, existing) and existing.category == rule.category
+            if jaccard >= min_jaccard and (same_span or rule.source_unit == existing.source_unit or jaccard >= 0.8):
+                target = existing
+                break
+        if target is None:
+            merged.append(rule)
+            continue
+        for ev in rule.evidence:
+            if not any(e.file == ev.file and e.line_start == ev.line_start for e in target.evidence):
+                target.evidence.append(ev)
+        target.confidence = max(target.confidence, rule.confidence)
+        for term in rule.domain_terms:
+            if term not in target.domain_terms:
+                target.domain_terms.append(term)
+        if "merged" not in target.tags:
+            target.tags.append("merged")
+    return merged
+
+
 def rule_id(statement: str, file: str) -> str:
     normalized = re.sub(r"\W+", " ", statement.lower()).strip()
     return "BR-" + hashlib.sha1(f"{normalized}|{file}".encode()).hexdigest()[:10]
@@ -191,6 +268,7 @@ class BusinessRuleExtractor:
                 if unit.fqn not in entry.related_units:
                     entry.related_units.append(unit.fqn)
 
+        result.rules = merge_near_duplicates(result.rules)
         result.glossary = sorted(glossary.values(), key=lambda g: g.term.lower())
         return result
 

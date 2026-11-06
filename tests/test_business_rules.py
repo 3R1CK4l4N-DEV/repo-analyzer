@@ -155,3 +155,50 @@ def test_kb_ingest_dedups_and_preserves_review(spring_analysis, fixtures, tmp_pa
         assert [t.term for t in kb.terms()] == ["Account", "Deposit"]
         summary = kb.summary()
         assert summary["rules"] == 2 and summary["runs"] == 3
+
+
+def test_merge_near_duplicates_keeps_all_evidence():
+    from devanalyzer.core.models import BusinessRule, Evidence
+    from devanalyzer.llm.business_rules import merge_near_duplicates
+
+    a = BusinessRule(
+        id="A",
+        statement="El nombre del perro no puede repetirse para el mismo propietario.",
+        category="validation",
+        source_unit="X",
+        confidence=0.8,
+        evidence=[Evidence(file="f.java", line_start=111, line_end=112)],
+    )
+    b = BusinessRule(
+        id="B",
+        statement="El nombre del perro no puede repetirse para el mismo propietario",
+        category="validation",
+        source_unit="X",
+        confidence=0.9,
+        evidence=[Evidence(file="f.java", line_start=150, line_end=151)],
+    )
+    c = BusinessRule(
+        id="C",
+        statement="La fecha de nacimiento no puede ser futura.",
+        category="validation",
+        source_unit="X",
+        evidence=[Evidence(file="f.java", line_start=115, line_end=116)],
+    )
+    d = BusinessRule(
+        id="D",
+        statement="El telefono debe tener 10 digitos",
+        category="validation",
+        source_unit="Y",
+        evidence=[Evidence(file="g.java", line_start=63, line_end=64)],
+    )
+    e = BusinessRule(
+        id="E",
+        statement="El telefono debe tener exactamente 10 digitos",
+        category="validation",
+        source_unit="Z",
+        evidence=[Evidence(file="g.java", line_start=63, line_end=65)],
+    )
+    out = merge_near_duplicates([a, b, c, d, e])
+    assert [r.id for r in out] == ["A", "C", "D"]
+    assert len(out[0].evidence) == 2 and out[0].confidence == 0.9 and "merged" in out[0].tags
+    assert len(out[2].evidence) == 1  # same span, same category, overlapping wording -> merged (evidence already identical start)

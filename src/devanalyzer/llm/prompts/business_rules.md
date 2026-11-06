@@ -33,6 +33,13 @@ Return ONLY a JSON object with this exact shape (no prose, no markdown fences):
   ]
 }}
 
+Never report as business rules (they are technical):
+- primary keys / ids being unique, generated, non-null or immutable; version/audit columns;
+- serialization or format annotations (@DateTimeFormat, @JsonFormat, @Column, @JoinColumn, @Temporal, nullable mapping details);
+- logging, caching, transactions, HTTP status codes, redirects without business meaning, demo/error-page controllers;
+- framework wiring (dependency injection, bean scopes, configuration).
+If one field carries several constraints (e.g. mandatory AND max length), report ONE rule covering all of them.
+
 Rules:
 - Use absolute line numbers; the snippet above starts at line {line_start}.
 - If there are no business rules in this unit, return {{"rules": [], "glossary": []}}.
