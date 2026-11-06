@@ -5,6 +5,7 @@ from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.plugin import language_ratio
 from devanalyzer.languages.node.frameworks import TYPE_KINDS, apply_stereotypes, extract_nest_endpoints, extract_relations
+from devanalyzer.languages.node.nextjs import extract_next_endpoints
 from devanalyzer.languages.node.parser import NodeParser, module_id
 
 NODE_LANGUAGES = (Language.JAVASCRIPT, Language.TYPESCRIPT)
@@ -31,7 +32,7 @@ class NodePlugin:
         apply_stereotypes(units)
         project_types = {u.fqn for u in units if u.kind in TYPE_KINDS}
 
-        endpoints = [e for u in units for e in extract_nest_endpoints(u)] + [e for nf in parsed for e in nf.endpoints]
+        endpoints = [e for u in units for e in extract_nest_endpoints(u)] + [e for nf in parsed for e in nf.endpoints] + extract_next_endpoints(files)
         relations = [r for nf in parsed for r in extract_relations(nf, project_modules, project_types)]
         ts_files = sum(1 for f in code if f.language == Language.TYPESCRIPT)
         return LanguageAnalysis(

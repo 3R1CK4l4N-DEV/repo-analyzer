@@ -1,0 +1,1 @@
+{ "name": "storefront", "dependencies": { "next": "^14.2.0", "react": "^18.3.0" }, "devDependencies": { "typescript": "^5.4.5" } }

@@ -4,6 +4,7 @@ from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, CodeUnitKind, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.plugin import language_ratio
+from devanalyzer.languages.python.django import classify_django, resolve_django_endpoints
 from devanalyzer.languages.python.frameworks import apply_stereotypes, extract_relations
 from devanalyzer.languages.python.parser import PythonParser, package_dirs
 
@@ -28,9 +29,13 @@ class PythonPlugin:
 
         units = [u for pf in parsed for u in pf.units]
         apply_stereotypes(units)
+        for u in self._iter_classes(units):
+            if u.stereotype is None and (dj := classify_django(u)):
+                u.stereotype = dj
         project_types = {u.fqn for u in self._iter_classes(units)}
 
-        endpoints = [e for pf in parsed for e in pf.endpoints]
+        units_by_fqn = {u.fqn: u for u in self._iter_classes(units)} | {u.fqn: u for u in units if u.kind == CodeUnitKind.FUNCTION}
+        endpoints = [e for pf in parsed for e in pf.endpoints] + resolve_django_endpoints(parsed, units_by_fqn)
         relations = [r for pf in parsed for r in extract_relations(pf, project_modules, project_types)]
         return LanguageAnalysis(
             language=Language.PYTHON,
