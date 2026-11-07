@@ -36,17 +36,19 @@ class NodeFile:
     units: list[CodeUnit] = field(default_factory=list)
     endpoints: list[Endpoint] = field(default_factory=list)
 
-    def resolve_import(self, name: str, project_modules: set[str]) -> str | None:
-        """Map an imported identifier to `<module>.<name>` when it points to a project file."""
+    def resolve_import(self, name: str, project_modules: set[str], aliases: tuple[tuple[str, str], ...] | list[tuple[str, str]] = ()) -> str | None:
+        """Map an imported identifier to `<module>.<name>` when it points to a project file (relative path or tsconfig alias)."""
         for imp in self.imports:
             if name in imp.names or name == imp.default or name == imp.namespace:
-                if not imp.source.startswith("."):
-                    return None
-                target = PurePosixPath(self.module).parent / imp.source
-                normalized = _normalize_module(str(target))
-                for candidate in (normalized, f"{normalized}/index"):
-                    if candidate in project_modules:
-                        return f"{candidate}.{name}"
+                if imp.source.startswith("."):
+                    targets = [str(PurePosixPath(self.module).parent / imp.source)]
+                else:
+                    targets = [directory + imp.source[len(prefix) :] for prefix, directory in aliases if imp.source.startswith(prefix)]
+                for target in targets:
+                    normalized = _normalize_module(target)
+                    for candidate in (normalized, f"{normalized}/index"):
+                        if candidate in project_modules:
+                            return f"{candidate}.{name}"
                 return None
         return None
 

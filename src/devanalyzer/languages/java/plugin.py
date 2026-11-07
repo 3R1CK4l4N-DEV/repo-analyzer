@@ -4,7 +4,7 @@ from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics, iter_types
 from devanalyzer.core.models import BuildInfo, BuildSystem, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.parse_cache import ParseCache
-from devanalyzer.core.plugin import language_ratio
+from devanalyzer.core.plugin import is_test_path, language_ratio
 from devanalyzer.languages.java.kotlin_parser import KotlinParser
 from devanalyzer.languages.java.parser import JavaParser
 from devanalyzer.languages.java.spring import apply_stereotypes, extract_endpoints, extract_relations
@@ -29,8 +29,8 @@ class JavaPlugin:
         return min(1.0, ratio * 0.8 + (0.2 if has_build else 0.0))
 
     def analyze(self, files: list[SourceFile], builds: list[BuildInfo], settings: Settings) -> LanguageAnalysis:
-        java_files = [f for f in files if f.language == Language.JAVA]
-        kotlin_files = [f for f in files if f.language == Language.KOTLIN and f.extension == ".kt"]
+        java_files = [f for f in files if f.language == Language.JAVA and not is_test_path(f.rel_path)]
+        kotlin_files = [f for f in files if f.language == Language.KOTLIN and f.extension == ".kt" and not is_test_path(f.rel_path)]
         java_parser = JavaParser()
         parsed = self._java_cache.parse(java_files, java_parser.parse) if self._java_cache is not None else [java_parser.parse(f) for f in java_files]
         if kotlin_files:

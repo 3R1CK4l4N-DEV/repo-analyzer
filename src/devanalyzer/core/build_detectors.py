@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import tomllib
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Protocol
 
 from devanalyzer.core.models import BuildInfo, BuildSystem, Dependency, SourceFile, Technology
@@ -97,9 +99,54 @@ class MavenDetector:
     NS = "{http://maven.apache.org/POM/4.0.0}"
 
     def detect(self, files: list[SourceFile]) -> list[BuildInfo]:
-        return [info for pom in _find(files, "pom.xml") if (info := self._parse(pom))]
+        poms = {pom.rel_path: pom for pom in _find(files, "pom.xml")}
+        return [info for pom in poms.values() if (info := self._parse(pom, self._inherited(pom, poms)))]
 
-    def _parse(self, pom: SourceFile) -> BuildInfo | None:
+    def _inherited(self, pom: SourceFile, poms: dict[str, SourceFile], depth: int = 0) -> dict:
+        """Properties and Spring Boot/Quarkus versions inherited through `<parent>` (aggregator poms in the project
+        or, for a module analysed on its own, the parent found via `relativePath` on disk). Child values win."""
+        empty: dict = {"props": {}, "versions": {}}
+        try:
+            root = ET.fromstring(pom.content)
+        except ET.ParseError:
+            return empty
+        ns = self.NS if root.tag.startswith("{") else ""
+        parent = root.find(f"{ns}parent")
+        if parent is None or depth > 3:
+            return empty
+        artifact, version = (parent.findtext(f"{ns}artifactId") or "").strip(), (parent.findtext(f"{ns}version") or "").strip()
+        if "spring-boot" in artifact:
+            return {"props": {}, "versions": {"spring_boot": version or "managed"}}
+        if "quarkus" in artifact:
+            return {"props": {}, "versions": {"quarkus": version or "managed"}}
+        relative = parent.findtext(f"{ns}relativePath")
+        relative = "../pom.xml" if relative is None else relative.strip()
+        if not relative:
+            return empty  # explicitly empty relativePath: parent comes from a repository
+        if relative.endswith("/") or not relative.endswith(".xml"):
+            relative = relative.rstrip("/") + "/pom.xml"
+        target_rel = posixpath.normpath(posixpath.join(posixpath.dirname(pom.rel_path), relative))
+        source = poms.get(target_rel)
+        if source is None:
+            candidate = Path(pom.path).parent / relative if pom.path else None
+            if candidate is None or not candidate.is_file():
+                return empty
+            source = SourceFile(
+                name="pom.xml", path=str(candidate), rel_path=target_rel, extension=".xml", content=candidate.read_text(encoding="utf-8", errors="replace")
+            )
+        above = self._inherited(source, poms, depth + 1)
+        try:
+            parent_root = ET.fromstring(source.content)
+        except ET.ParseError:
+            return above
+        props = dict(above["props"])
+        props_el = parent_root.find(f"{ns}properties")
+        for child in props_el if props_el is not None else []:
+            props[child.tag.replace(ns, "")] = (child.text or "").strip()
+        return {"props": props, "versions": above["versions"]}
+
+    def _parse(self, pom: SourceFile, inherited: dict | None = None) -> BuildInfo | None:
+        inherited = inherited or {"props": {}, "versions": {}}
         try:
             root = ET.fromstring(pom.content)
         except ET.ParseError:
@@ -107,7 +154,7 @@ class MavenDetector:
         ns = self.NS if root.tag.startswith("{") else ""
         text = lambda el, tag: (el.findtext(f"{ns}{tag}") or "").strip() or None  # noqa: E731
 
-        props: dict[str, str] = {}
+        props: dict[str, str] = dict(inherited["props"])
         props_el = root.find(f"{ns}properties")
         if props_el is not None:
             for child in props_el:
@@ -118,7 +165,7 @@ class MavenDetector:
 
         resolve = lambda v: re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), v or "") or None  # noqa: E731
 
-        versions: dict[str, str] = {}
+        versions: dict[str, str] = dict(inherited["versions"])
         java_version = (
             props.get("maven.compiler.release")
             or props.get("maven.compiler.source")
@@ -136,9 +183,10 @@ class MavenDetector:
             parent_version = text(parent, "version")
             if "spring-boot" in parent_artifact:
                 versions["spring_boot"] = parent_version or "managed"
-                frameworks.append(Technology(name="Spring Boot", version=parent_version))
             elif "quarkus" in parent_artifact:
                 versions["quarkus"] = parent_version or "managed"
+        if "spring_boot" in versions:
+            frameworks.append(Technology(name="Spring Boot", version=versions["spring_boot"] if versions["spring_boot"] != "managed" else None))
 
         deps: list[Dependency] = []
         deps_el = root.find(f"{ns}dependencies")
@@ -159,6 +207,10 @@ class MavenDetector:
             if (text(plugin_el, "artifactId") or "") == "spring-boot-maven-plugin" and "spring_boot" not in versions:
                 versions["spring_boot"] = resolve(text(plugin_el, "version")) or "managed"
                 frameworks.append(Technology(name="Spring Boot", version=versions["spring_boot"]))
+        # Modules that get Spring Boot through a BOM or an aggregator parent still declare the starters.
+        if "spring_boot" not in versions and any(d.name.startswith("org.springframework.boot:spring-boot-starter") for d in deps):
+            versions["spring_boot"] = resolve(props.get("spring-boot.version") or props.get("spring.boot.version")) or "managed"
+            frameworks.append(Technology(name="Spring Boot", version=None if versions["spring_boot"] == "managed" else versions["spring_boot"]))
 
         frameworks += match_frameworks(deps, JAVA_FRAMEWORKS)
         if any("kotlin" in d.name for d in deps):
@@ -290,6 +342,8 @@ class NpmDetector:
 class PythonBuildDetector:
     REQ_RE = re.compile(r"^\s*([A-Za-z0-9_.\-\[\]]+)\s*(?:(==|>=|<=|~=|!=|>|<)\s*([^\s;#]+))?")
 
+    REQUIREMENTS_RE = re.compile(r"(?:^|/)requirements(?:[\w.-]*\.txt|/[\w.-]+\.txt)$")
+
     def detect(self, files: list[SourceFile]) -> list[BuildInfo]:
         infos: list[BuildInfo] = []
         names = {f.name.lower() for f in files}
@@ -297,8 +351,11 @@ class PythonBuildDetector:
             if info := self._parse_pyproject(py, names):
                 infos.append(info)
         if not infos:
-            for req in _find(files, "requirements.txt"):
-                infos.append(self._parse_requirements(req))
+            req_files = {f.rel_path: f for f in files if self.REQUIREMENTS_RE.search(f.rel_path)}
+            # `requirements.txt` usually includes the others with `-r`; without it, every requirements file counts.
+            roots = [f for f in req_files.values() if f.name == "requirements.txt"] or sorted(req_files.values(), key=lambda f: f.rel_path)
+            if roots:
+                infos.append(self._parse_requirements(roots, req_files))
         return infos
 
     def _parse_pyproject(self, py: SourceFile, names: set[str]) -> BuildInfo | None:
@@ -309,6 +366,8 @@ class PythonBuildDetector:
         project = data.get("project") or {}
         tool = data.get("tool") or {}
         poetry = tool.get("poetry") or {}
+        if not project and not poetry:
+            return None  # tooling-only pyproject (ruff, pytest...): dependencies live in requirements files
 
         system = BuildSystem.PIP
         if poetry:
@@ -340,16 +399,31 @@ class PythonBuildDetector:
             project_name=project.get("name") or poetry.get("name"),
         )
 
-    def _parse_requirements(self, req: SourceFile) -> BuildInfo:
-        deps = []
-        for line in req.content.splitlines():
-            line = line.strip()
-            if not line or line.startswith(("#", "-")):
-                continue
-            deps.append(self._dep_from_spec(line, "runtime", req.rel_path))
+    def _parse_requirements(self, roots: list[SourceFile], by_path: dict[str, SourceFile]) -> BuildInfo:
+        deps: list[Dependency] = []
+        seen: set[str] = set()
+
+        def visit(req: SourceFile) -> None:
+            if req.rel_path in seen:
+                return
+            seen.add(req.rel_path)
+            for line in req.content.splitlines():
+                line = line.split(" #", 1)[0].strip()
+                if line.startswith(("-r", "--requirement")):
+                    target = line.split("=", 1)[1] if line.startswith("--requirement=") else line.split(None, 1)[1] if " " in line else line[2:]
+                    included = by_path.get(posixpath.normpath(posixpath.join(posixpath.dirname(req.rel_path), target.strip())))
+                    if included is not None:
+                        visit(included)
+                elif line and not line.startswith(("#", "-")):
+                    dep = self._dep_from_spec(line, "runtime", req.rel_path)
+                    if dep.name.lower() not in {d.name.lower() for d in deps}:
+                        deps.append(dep)
+
+        for root in roots:
+            visit(root)
         return BuildInfo(
             system=BuildSystem.PIP,
-            manifest_path=req.rel_path,
+            manifest_path=roots[0].rel_path,
             dependencies=deps,
             frameworks=match_frameworks(deps, PYTHON_FRAMEWORKS),
         )

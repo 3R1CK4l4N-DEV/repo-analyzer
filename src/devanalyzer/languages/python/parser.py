@@ -31,9 +31,10 @@ class PyFile:
         """Resolve a local identifier to `<module>.<name>` if it is imported from a project module."""
         base = name.split(".")[0]
         for imp in self.imports:
-            if base not in imp.names:
+            # Both the local alias and the original name resolve (class bases are stored by original name).
+            if base not in imp.names and base not in imp.names.values():
                 continue
-            original = imp.names[base]
+            original = imp.names.get(base, base)
             target_module = self.absolute_module(imp)
             candidates = [f"{target_module}.{original}" if target_module else original]
             # `import pkg.mod` / `from pkg import mod` styles
@@ -140,7 +141,9 @@ class PythonParser:
     # ------------------------------------------------------------ units
     def _class_unit(self, node: ast.ClassDef, pf: PyFile, parent: str) -> CodeUnit:
         fqn = f"{parent}.{node.name}"
-        bases = [_dotted(b) or ast.unparse(b) for b in node.bases]
+        # `from django.db.models import Model as M` -> the base is still Model for every heuristic downstream.
+        aliases = {local: original for imp in pf.imports for local, original in imp.names.items() if local != original}
+        bases = [aliases.get(base, base) if "." not in base else base for b in node.bases for base in [_dotted(b) or ast.unparse(b)]]
         unit = CodeUnit(
             kind=CodeUnitKind.CLASS,
             name=node.name,
@@ -269,7 +272,8 @@ class PythonParser:
         endpoints = []
         for ann in unit.annotations:
             receiver, _, attr = ann.name.rpartition(".")
-            if attr in HTTP_METHODS or attr in ROUTE_DECORATORS:
+            # Routes hang off an app/router object (`@app.get`, `@bp.route`); a bare `@patch(...)` is unittest.mock.
+            if receiver and (attr in HTTP_METHODS or attr in ROUTE_DECORATORS):
                 path = _first_string(ann.arguments)
                 if path is None:
                     continue

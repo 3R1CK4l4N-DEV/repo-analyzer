@@ -4,12 +4,10 @@ from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, CodeUnitKind, Language, LanguageAnalysis, SourceFile
 from devanalyzer.core.parse_cache import ParseCache
-from devanalyzer.core.plugin import language_ratio
+from devanalyzer.core.plugin import is_test_path, language_ratio
 from devanalyzer.languages.python.django import classify_django, resolve_django_endpoints
 from devanalyzer.languages.python.frameworks import apply_stereotypes, extract_relations
 from devanalyzer.languages.python.parser import PythonParser, package_dirs
-
-SKIP_PREFIXES = ("tests/", "test_", "conftest")
 
 
 class PythonPlugin:
@@ -26,8 +24,9 @@ class PythonPlugin:
         return min(1.0, ratio * 0.8 + (0.2 if has_build else 0.0))
 
     def analyze(self, files: list[SourceFile], builds: list[BuildInfo], settings: Settings) -> LanguageAnalysis:
-        code = [f for f in files if f.language == Language.PYTHON]
-        packages = package_dirs([f.rel_path for f in code])
+        code = [f for f in files if f.language == Language.PYTHON and not is_test_path(f.rel_path)]
+        # Package layout is a property of the whole tree, test packages included.
+        packages = package_dirs([f.rel_path for f in files if f.language == Language.PYTHON])
         parser = PythonParser(packages)
         parsed = self._cache.parse(code, parser.parse, frozenset(packages)) if self._cache is not None else [parser.parse(f) for f in code]
         project_modules = {pf.module for pf in parsed} | {pf.module.rsplit(".__init__", 1)[0] for pf in parsed if pf.module.endswith("__init__")}
@@ -35,7 +34,8 @@ class PythonPlugin:
         units = [u for pf in parsed for u in pf.units]
         apply_stereotypes(units)
         for u in self._iter_classes(units):
-            if u.stereotype is None and (dj := classify_django(u)):
+            # Explicit Django bases (Model, APIView, Manager...) outrank name hints such as `*Manager` -> service.
+            if dj := classify_django(u):
                 u.stereotype = dj
         project_types = {u.fqn for u in self._iter_classes(units)}
 

@@ -42,8 +42,13 @@ def apply_stereotypes(units: list[CodeUnit]) -> None:
         if unit.kind in TYPE_KINDS:
             unit.stereotype = classify(unit)
             apply_stereotypes([c for c in unit.children if c.kind == CodeUnitKind.CLASS])
-        elif unit.kind == CodeUnitKind.FUNCTION and any(a.name.rpartition(".")[2] in HTTP_METHODS | ROUTE_DECORATORS for a in unit.annotations):
+        elif unit.kind == CodeUnitKind.FUNCTION and any(_is_route_decorator(a.name) for a in unit.annotations):
             unit.stereotype = "controller"
+
+
+def _is_route_decorator(name: str) -> bool:
+    receiver, _, attr = name.rpartition(".")
+    return bool(receiver) and attr in HTTP_METHODS | ROUTE_DECORATORS
 
 
 def _type_names(type_text: str | None) -> list[str]:

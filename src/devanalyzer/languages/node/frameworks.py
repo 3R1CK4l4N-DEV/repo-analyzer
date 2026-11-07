@@ -88,21 +88,30 @@ def extract_nest_endpoints(unit: CodeUnit) -> list[Endpoint]:
     return endpoints
 
 
-def extract_relations(nf: NodeFile, project_modules: set[str], project_types: set[str]) -> list[Relation]:
+def extract_relations(nf: NodeFile, project_modules: set[str], project_types: set[str], aliases: list[tuple[str, str]] | None = None) -> list[Relation]:
     relations: list[Relation] = []
     local_types = {u.name: u.fqn for u in nf.units if u.kind in TYPE_KINDS}
+    aliases = aliases or []
 
     def resolve(name: str) -> str | None:
         base = name.split("<")[0].split("[")[0].strip()
         if base in local_types:
             return local_types[base]
-        resolved = nf.resolve_import(base, project_modules)
+        resolved = nf.resolve_import(base, project_modules, aliases)
         return resolved if resolved in project_types else None
+
+    def resolve_all(type_text: str) -> list[str]:
+        """Every project type named in a type expression: `Repository<ArticleEntity>` depends on ArticleEntity."""
+        out: list[str] = []
+        for name in re.findall(r"[A-Za-z_$][\w$]*", type_text):
+            if (t := resolve(name)) and t not in out:
+                out.append(t)
+        return out
 
     for unit in nf.units:
         for imp in nf.imports:
             for name in imp.names + ([imp.default] if imp.default else []):
-                target = nf.resolve_import(name, project_modules)
+                target = nf.resolve_import(name, project_modules, aliases)
                 if target and target in project_types:
                     relations.append(Relation(source=unit.fqn, target=target, kind=RelationKind.IMPORTS))
         for base in unit.extends:
@@ -115,20 +124,22 @@ def extract_relations(nf: NodeFile, project_modules: set[str], project_types: se
         for child in unit.children:
             if child.kind == CodeUnitKind.FIELD and child.type:
                 field_types[child.name] = child.type
-                if t := resolve(child.type):
+                for t in resolve_all(child.type):
                     relations.append(Relation(source=unit.fqn, target=t, kind=RelationKind.DEPENDS_ON))
             elif child.kind == CodeUnitKind.METHOD:
                 relations.append(Relation(source=unit.fqn, target=child.fqn, kind=RelationKind.CONTAINS))
                 for p in child.parameters:
-                    if p.type and (t := resolve(p.type)) and t != unit.fqn:
-                        relations.append(Relation(source=unit.fqn, target=t, kind=RelationKind.DEPENDS_ON))
-        for child in unit.children:
-            if child.kind != CodeUnitKind.METHOD:
-                continue
-            for call in child.calls:
+                    for t in resolve_all(p.type or ""):
+                        if t != unit.fqn:
+                            relations.append(Relation(source=unit.fqn, target=t, kind=RelationKind.DEPENDS_ON))
+        callables = [unit] if unit.kind == CodeUnitKind.FUNCTION else [c for c in unit.children if c.kind == CodeUnitKind.METHOD]
+        for fn in callables:
+            for call in fn.calls:
                 receiver, _, method_name = call.rpartition(".")
                 if receiver in field_types and (t := resolve(field_types[receiver])):
-                    relations.append(Relation(source=child.fqn, target=f"{t}.{method_name}", kind=RelationKind.CALLS))
+                    relations.append(Relation(source=fn.fqn, target=f"{t}.{method_name}", kind=RelationKind.CALLS))
+                elif not receiver and (t := resolve(call)) and t != fn.fqn:
+                    relations.append(Relation(source=fn.fqn, target=t, kind=RelationKind.CALLS))  # imported function
     seen: set[tuple] = set()
     unique = []
     for r in relations:

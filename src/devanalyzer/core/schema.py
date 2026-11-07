@@ -331,6 +331,137 @@ def parse_alembic(content: str, source_file: str, tables: dict[str, Table] | Non
     return list(tables.values())
 
 
+# ---------------------------------------------------------------- Django migrations
+DJANGO_SCALAR_FIELDS = ("ForeignKey", "OneToOneField", "ManyToManyField")
+
+
+def _dotted_name(node: ast.expr | None) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else node.attr
+    return ""
+
+
+def parse_django_migration(content: str, source_file: str, tables: dict[str, Table] | None = None, model_tables: dict[str, str] | None = None) -> list[Table]:
+    """Apply `migrations.CreateModel/AddField/...` operations. Tables follow Django's `<app>_<model>` naming unless
+    `db_table` is given; `model_tables` ("app.model" -> table) carries renames across migration files."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    tables = tables if tables is not None else {}
+    model_tables = model_tables if model_tables is not None else {}
+    parts = source_file.replace("\\", "/").split("/")
+    app = parts[parts.index("migrations") - 1] if "migrations" in parts and parts.index("migrations") > 0 else "app"
+
+    def const(node: ast.expr | None) -> str | None:
+        return str(node.value) if isinstance(node, ast.Constant) and node.value is not None else None
+
+    def kw(call: ast.Call, name: str, position: int | None = None) -> ast.expr | None:
+        value = next((k.value for k in call.keywords if k.arg == name), None)
+        return value if value is not None or position is None or len(call.args) <= position else call.args[position]
+
+    def model_key(name: str, app_label: str = app) -> str:
+        return f"{app_label}.{name}".lower()
+
+    def table_of(name: str) -> Table | None:
+        return tables.get(model_tables.get(model_key(name), f"{app}_{name}".lower()))
+
+    def ref_table(to: ast.expr | None) -> str | None:
+        if (value := const(to)) is not None:
+            label, _, model = value.rpartition(".")
+            key = model_key(model, label) if label else model_key(model)
+            return model_tables.get(key, key.replace(".", "_"))
+        return "auth_user" if _dotted_name(to).endswith("AUTH_USER_MODEL") else None
+
+    def column_from(name: str, field: ast.expr) -> tuple[Column | None, ForeignKey | None]:
+        if not isinstance(field, ast.Call):
+            return None, None
+        ftype = _dotted_name(field.func).rsplit(".", 1)[-1]
+        if ftype == "ManyToManyField":
+            return None, None  # join tables are implicit; not modelled
+        pk = const(kw(field, "primary_key")) == "True"
+        nullable = const(kw(field, "null")) == "True" and not pk
+        if ftype in DJANGO_SCALAR_FIELDS:
+            column = Column(name=f"{name}_id", type=ftype.upper(), nullable=nullable, primary_key=pk)
+            target = ref_table(kw(field, "to", 0))
+            return column, ForeignKey(column=column.name, ref_table=target, ref_column="id") if target else None
+        return Column(name=const(kw(field, "db_column")) or name, type=ftype.removesuffix("Field").upper(), nullable=nullable, primary_key=pk), None
+
+    operations: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "operations" for t in node.targets) and isinstance(node.value, ast.List):
+            operations.extend(node.value.elts)
+    for op in operations:
+        if not isinstance(op, ast.Call):
+            continue
+        kind = _dotted_name(op.func).rsplit(".", 1)[-1]
+        if kind == "CreateModel" and (name := const(kw(op, "name", 0))):
+            options = kw(op, "options")
+            db_table = None
+            if isinstance(options, ast.Dict):
+                db_table = next((const(v) for k, v in zip(options.keys, options.values) if const(k) == "db_table"), None)
+            table_name = _clean(db_table) if db_table else f"{app}_{name}".lower()
+            table = Table(name=table_name, source_file=source_file, line=op.lineno, tool="django")
+            fields = kw(op, "fields", 1)
+            for item in fields.elts if isinstance(fields, (ast.List, ast.Tuple)) else []:
+                if isinstance(item, ast.Tuple) and len(item.elts) >= 2 and (field_name := const(item.elts[0])):
+                    column, fk = column_from(field_name, item.elts[1])
+                    if column is not None:
+                        table.columns.append(column)
+                    if fk is not None:
+                        table.foreign_keys.append(fk)
+            tables[table.name] = table
+            model_tables[model_key(name)] = table.name
+        elif kind in ("AddField", "AlterField") and (model := const(kw(op, "model_name", 0))) and (field_name := const(kw(op, "name", 1))):
+            if (table := table_of(model)) is None:
+                continue
+            column, fk = column_from(field_name, kw(op, "field", 2))
+            if column is None:
+                continue
+            table.columns = [c for c in table.columns if c.name not in (column.name, field_name)]
+            table.foreign_keys = [f for f in table.foreign_keys if f.column not in (column.name, field_name)]
+            table.columns.append(column)
+            if fk is not None:
+                table.foreign_keys.append(fk)
+        elif kind == "RemoveField" and (model := const(kw(op, "model_name", 0))) and (field_name := const(kw(op, "name", 1))):
+            if (table := table_of(model)) is not None:
+                table.columns = [c for c in table.columns if c.name not in (field_name, f"{field_name}_id")]
+                table.foreign_keys = [f for f in table.foreign_keys if f.column != f"{field_name}_id"]
+        elif (
+            kind == "RenameField"
+            and (model := const(kw(op, "model_name", 0)))
+            and (old := const(kw(op, "old_name", 1)))
+            and (new := const(kw(op, "new_name", 2)))
+        ):
+            if (table := table_of(model)) is not None:
+                for c in table.columns:
+                    if c.name in (old, f"{old}_id"):
+                        c.name = new if c.name == old else f"{new}_id"
+                for f in table.foreign_keys:
+                    if f.column == f"{old}_id":
+                        f.column = f"{new}_id"
+        elif kind == "DeleteModel" and (name := const(kw(op, "name", 0))):
+            if (table := table_of(name)) is not None:
+                tables.pop(table.name, None)
+                model_tables.pop(model_key(name), None)
+        elif kind in ("RenameModel", "AlterModelTable"):
+            if kind == "RenameModel":
+                old, new = const(kw(op, "old_name", 0)), const(kw(op, "new_name", 1))
+                new_table = f"{app}_{new}".lower() if new else None
+            else:
+                old, new, new_table = const(kw(op, "name", 0)), const(kw(op, "name", 0)), const(kw(op, "table", 1))
+            if old and new and new_table and (table := table_of(old)) is not None:
+                tables.pop(table.name, None)
+                model_tables.pop(model_key(old), None)
+                table.name = _clean(new_table)
+                tables[table.name] = table
+                model_tables[model_key(new)] = table.name
+    return list(tables.values())
+
+
 # ---------------------------------------------------------------- TypeORM / Prisma
 TEMPLATE_SQL_RE = re.compile(r"query\s*\(\s*(?:`([^`]*)`|'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\")", re.S)
 
@@ -344,6 +475,8 @@ def parse_typeorm_migration(content: str, source_file: str, tables: dict[str, Ta
 
 
 PRISMA_MODEL_RE = re.compile(r"model\s+(\w+)\s*\{(.*?)\n\}", re.S)
+PRISMA_TABLE_MAP_RE = re.compile(r'@@map\(\s*(?:name\s*:\s*)?"([^"]+)"')
+PRISMA_MAP_RE = re.compile(r'(?<!@)@map\(\s*(?:name\s*:\s*)?"([^"]+)"')
 
 
 def parse_prisma(content: str, source_file: str) -> list[Table]:
@@ -352,8 +485,11 @@ def parse_prisma(content: str, source_file: str) -> list[Table]:
         model, body = m.group(1), m.group(2)
         table = Table(name=model.lower(), source_file=source_file, line=content.count("\n", 0, m.start()) + 1, tool="prisma")
         table.mapped_entities.append(f"prisma.{model}")
-        if mm := re.search(r'@@map\(\s*"([^"]+)"\s*\)', body):
+        # `@@map("accounts")` and `@@map(name: "accounts")` rename the table; `@map` renames a column.
+        if mm := PRISMA_TABLE_MAP_RE.search(body):
             table.name = _clean(mm.group(1))
+        columns_by_field: dict[str, str] = {}
+        pending_fks: list[tuple[str, str, str]] = []
         for line in body.splitlines():
             line = line.strip()
             if not line or line.startswith(("//", "@@")):
@@ -365,17 +501,24 @@ def parse_prisma(content: str, source_file: str) -> list[Table]:
             attrs = " ".join(parts[2:])
             if rel := re.search(r"@relation\(\s*fields:\s*\[([^\]]+)\]\s*,\s*references:\s*\[([^\]]+)\]", attrs):
                 for c, r in zip(rel.group(1).split(","), rel.group(2).split(",")):
-                    table.foreign_keys.append(ForeignKey(column=_clean(c), ref_table=ftype.rstrip("?[]").lower(), ref_column=_clean(r)))
+                    pending_fks.append((_clean(c), ftype.rstrip("?[]").lower(), _clean(r)))
                 continue
             if ftype[0].isupper() and ftype.rstrip("?[]") not in ("String", "Int", "BigInt", "Float", "Decimal", "Boolean", "DateTime", "Json", "Bytes"):
                 continue  # relation field without fk mapping (back-reference)
-            table.columns.append(Column(name=_clean(name), type=ftype.rstrip("?").upper(), nullable=ftype.endswith("?"), primary_key="@id" in attrs))
+            column = _clean(cm.group(1)) if (cm := PRISMA_MAP_RE.search(attrs)) else _clean(name)
+            columns_by_field[_clean(name)] = column
+            table.columns.append(Column(name=column, type=ftype.rstrip("?").upper(), nullable=ftype.endswith("?"), primary_key="@id" in attrs))
+        for field, ref_table, ref_field in pending_fks:
+            table.foreign_keys.append(ForeignKey(column=columns_by_field.get(field, field), ref_table=ref_table, ref_column=ref_field))
         tables.append(table)
-    # resolve @@map names for FK targets
-    by_model = {t.mapped_entities[0].split(".")[1].lower(): t.name for t in tables}
+    # resolve @@map names for FK targets (and @map names of the referenced fields)
+    by_model = {t.mapped_entities[0].split(".")[1].lower(): t for t in tables}
     for t in tables:
         for fk in t.foreign_keys:
-            fk.ref_table = by_model.get(fk.ref_table, fk.ref_table)
+            if (target := by_model.get(fk.ref_table)) is not None:
+                fk.ref_table = target.name
+                if fk.ref_column and not target.column(fk.ref_column):
+                    fk.ref_column = next((c.name for c in target.columns if c.primary_key), fk.ref_column)
     return tables
 
 
@@ -391,6 +534,7 @@ def _is_test_or_data(rel: str) -> bool:
 def detect_schema(files: list[SourceFile]) -> SchemaInfo:
     """Apply every migration/schema source in path order on a shared table state."""
     state: dict[str, Table] = {}
+    django_models: dict[str, str] = {}
     sources: list[str] = []
 
     def alembic_key(rel: str) -> tuple:
@@ -423,6 +567,9 @@ def detect_schema(files: list[SourceFile]) -> SchemaInfo:
         elif f.extension in (".yml", ".yaml") and ("changelog" in low or "databaseChangeLog" in f.content[:2000]):
             for t in parse_liquibase_yaml(f.content, rel):
                 state[t.name] = t
+            touched = True
+        elif f.language == Language.PYTHON and "/migrations/" in low and "migrations.Migration" in f.content:
+            parse_django_migration(f.content, rel, tables=state, model_tables=django_models)
             touched = True
         elif f.language == Language.PYTHON and ("alembic" in low or "/versions/" in low or low.startswith("versions/")) and "op." in f.content:
             parse_alembic(f.content, rel, tables=state)
@@ -472,6 +619,9 @@ def map_entities(schema: SchemaInfo, units: list[CodeUnit]) -> None:
         candidates = []
         if hint := _table_hint(u):
             candidates.append(_clean(hint))
+        parts = u.fqn.split(".")
+        if "models" in parts[:-1] and parts.index("models") > 0:
+            candidates.append(f"{parts[parts.index('models') - 1]}_{u.name}".lower())  # Django: <app>_<model>
         candidates += sorted(_variants(u.name), key=len)
         for cand in candidates:
             if (t := by_name.get(cand)) is not None:

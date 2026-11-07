@@ -1,6 +1,6 @@
 # DevAnalyzer — Estado actual y mejoras a definir
 
-Fecha: 2026-11-05 (actualizado tras iteración 4) · Rama `main` (local, 32 commits, sin push) · 129/129 tests
+Fecha: 2026-11-06 (actualizado tras iteración 5) · Rama `main` (local, 33 commits, sin push) · 140/140 tests
 
 ---
 
@@ -63,6 +63,10 @@ devanalyzer watch <repo> [--once]     → re-análisis incremental al guardar; r
 |---|---|
 | `~/IdeaProjects/BancoProject` (tuyo) | Maven, Java 17, Spring Boot 3.0.0, Lombok. Test de integración automático |
 | `spring-projects/spring-petclinic` (clonado y auditado) | 17 endpoints, 304 nodos, 7 tablas con mapeo entidad→tabla; flujos alcanzan tablas (`POST /owners/{id}/pets/new` → owners, pets). Eval con gold de 17 reglas: prompt v1 **F1 74%** (P91/R62) → prompt v2 (R3+R4) **F1 78%** (P70/R88); los FP restantes son en su mayoría duplicados que `rules consolidate` fusiona y 2 técnicos que el juez 8b no rechaza |
+| `spring-petclinic/spring-petclinic-microservices` (workspace, 8 módulos Maven) | 8 módulos descubiertos; customers-service 8/8 endpoints y 3 tablas mapeadas; versiones heredadas del pom padre (`java 17`, `spring_boot 4.0.1`); **19 enlaces, 0 sin resolver**: backend→backend (`http://customers-service/owners/{ownerId}`), frontend Vue→gateway→servicio (`/api/customer/petTypes`), rutas `lb://` del gateway, `base url` (`http://visits-service/`) |
+| `shadcn-ui/taxonomy` (Next.js 13 App Router + Prisma) | 23 rutas (route handlers por verbo, páginas, grupos `(marketing)`, `[...slug]`), 5 tablas Prisma con `@@map/@map`, 369 relaciones vía alias `@/`, 15 candidatos LLM por módulo (6 controladores) |
+| `lujakob/nestjs-realworld-example-app` (NestJS + TypeORM) | 21/21 endpoints, 6 controllers / 6 services / 5 entities, `calls` controller→service, `depends_on` service→entidad a través de `Repository<Entity>` |
+| `HackSoftware/Django-Styleguide-Example` (Django + DRF) | 22 endpoints a través de `include()` anidados (inline y por módulo), Django detectado desde `requirements/base.txt`, 15 tablas desde migraciones (`CreateModel/AddField/RenameField…`) mapeadas a los modelos, managers como repository |
 | DevAnalyzer sobre sí mismo (dogfooding) | 523 nodos / 1.717 aristas; test automático |
 | Sintético 3.000 clases Spring | Análisis estático completo ~5.5 s; grafo 18.8k nodos |
 
@@ -83,7 +87,9 @@ devanalyzer watch <repo> [--once]     → re-análisis incremental al guardar; r
 |---|---|---|
 | Resolución de versiones heredadas de BOM Maven | Bajo | Se reporta `managed`; resolver requiere red/`mvn help:effective-pom` |
 | Heurísticas de estereotipos Python/Node por nombre | Medio | Falsos positivos posibles (`*Manager`, `*Model`); configurables en `languages/*/frameworks.py` |
-| Resolución de imports Node sin `tsconfig` paths/aliases (`@/…`) | Medio | Solo imports relativos; aliases quedan sin relación |
+| Imports Node solo por `tsconfig` raíz | Bajo | Monorepos con un `tsconfig` por paquete usan el más alto; `extends` no se sigue |
+| Migraciones Django: `ManyToManyField` y `Meta.db_table` | Bajo | Las tablas intermedias no se modelan; `db_table` solo se lee en `CreateModel(options=...)` |
+| Enlaces de workspace por literal | Medio | URLs construidas en tiempo de ejecución (`baseUrl + path` desde config) quedan como `base url` o sin resolver |
 | Tablas Rich truncan con `…` en consola Windows legacy | Cosmético | `--json` para salida completa |
 | `watch` usa polling (lee y hashea todo el proyecto en cada ciclo) | Bajo | ~0.13 s ocioso en petclinic; `watchdog` solo si molesta en repos de >10k archivos |
 | Migración de IDs legacy exige el mismo archivo de evidencia | Bajo | Si el archivo se renombró entre corridas, la regla antigua queda huérfana (se conserva, no se borra) |
@@ -177,7 +183,24 @@ Pendientes de decidir: **D4** (embeddings: recomiendo Ollama `nomic-embed-text` 
 
 ---
 
-## 4. Iteración 4 — completada
+## 4. Iteración 5 — validación con repos reales (completada)
+
+Se clonaron cuatro repos públicos que cubrían los huecos de validación (workspace Java, Next.js, NestJS, Django) y se corrigió todo lo que falló; cada corrección tiene su test en `tests/test_real_world_regressions.py`:
+
+| Hallazgo | Corrección |
+|---|---|
+| Código funcional (Next.js `route.ts`, FastAPI) nunca llegaba al LLM: solo las clases eran candidatas | Candidato sintético por módulo (archivo) para funciones; los handlers de rutas pasan a `controller`; los `.tsx` de UI se excluyen salvo que sean handlers |
+| `http://customers-service/...` sin resolver (carpetas `spring-petclinic-*`), `<router-link to="/owners">` enlazado como llamada, `/owners/details/${id}` casando con `/owners/{id}/pets` | Prefijo común de nombres, literales de navegación ignorados, solo el endpoint aporta comodines; además enlaces `base url` y rutas `lb://` de Spring Cloud Gateway |
+| `@patch(...)` de `unittest.mock` como endpoint Flask | Los decoradores de ruta exigen receptor (`app.`, `router.`…) y los tests quedan fuera del análisis en los 4 lenguajes |
+| `include([lista inline], ns)` anidado perdía el prefijo | `urlpatterns` se recorre recursivamente (listas inline, variables, `+=`) |
+| Tablas Prisma duplicadas | `@@map(name: ...)` y `@map` de columnas |
+| Django sin framework/deps (`pyproject` solo con ruff, `requirements.txt` → `-r`) | pyproject sin `[project]` no es manifiesto; se siguen `-r` y `requirements/*.txt` |
+| `Repository<ArticleEntity>` no generaba dependencia | Todos los identificadores del tipo genérico se resuelven |
+| Alias `@/` sin relaciones | `tsconfig` `paths`/`baseUrl` (parser tolerante a comentarios y `"@/*"`) |
+| Módulos Maven sin versiones | Herencia por `<parent>`/`relativePath` dentro del proyecto o en disco; Spring Boot por starters |
+| Migraciones Django sin tablas | `CreateModel/AddField/AlterField/RemoveField/RenameField/RenameModel/DeleteModel`, mapeo `<app>_<model>` |
+
+## 4b. Iteración 4 — completada
 
 RAG + dedup estructural → workspace en vault/MCP → Django/Next.js → corrección de bugs del review → X2 `watch`.
 
@@ -187,7 +210,7 @@ Hallazgos relevantes:
 - `deepcopy` de los resultados cacheados del parser costaba más que el parseo que ahorraba (1.73 s vs 1.15 s en 3.000 clases); la caché devuelve objetos compartidos y se verifica que la clasificación es idempotente (`incremental == no incremental` en Java/Kotlin/Node/Python).
 - Dos notas cuyos títulos solo difieren en mayúsculas (`Account`/`account`, dos handlers con la misma ruta) se escribían en paralelo sobre el mismo archivo en Windows: salida no determinista entre corridas. Ahora el glosario fusiona términos sin distinguir mayúsculas y el vault escribe una sola vez por ruta.
 
-## 4a. Iteración 3 — completada
+## 4c. Iteración 3 — completada
 
 L1 Kotlin → L2 Jakarta/Quarkus/Micronaut → R3+R4 → G2 flujos → G1 semántica → G4 multi-repo.
 

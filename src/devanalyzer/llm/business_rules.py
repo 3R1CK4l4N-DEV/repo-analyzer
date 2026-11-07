@@ -110,6 +110,8 @@ _CONSTRAINT_WORDS = set(
     "debe puede pueden obligatorio opcional solo salvo excepto antes despues menor mayor minimo maximo".split()
 )
 _SYMBOLS = re.compile(r"<=|>=|!=|==|[<>=≤≥%$€£]|(?<!\w)[+\-−](?=\d)")
+# React hooks and component helpers describe UI state (toasts, body lock, mounted flags), never business rules.
+UI_MODULE_RE = re.compile(r"(?:^|/)(?:hooks|components|ui)/|(?:^|/)use-[\w-]+\.[cm]?[jt]sx?$")
 
 
 def _normalized_statement(text: str) -> str:
@@ -258,7 +260,41 @@ class BusinessRuleExtractor:
                         yield u
                     yield from walk(c for c in u.children if c.kind in TYPE_KINDS)
 
-        return list(walk(analysis.units))
+        return list(walk(analysis.units)) + BusinessRuleExtractor._module_candidates(analysis, wanted, min_loc)
+
+    @staticmethod
+    def _module_candidates(analysis: ProjectAnalysis, wanted: set[str | None], min_loc: int) -> list[CodeUnit]:
+        """Function-based code (Next.js route handlers, FastAPI modules, scripts) has no class to send to the model:
+        one synthetic module unit per file spanning its functions. UI component files (.tsx/.jsx) only qualify
+        when they host a route handler."""
+        by_file: dict[str, list[CodeUnit]] = {}
+        for u in analysis.units:
+            if u.kind == CodeUnitKind.FUNCTION:
+                by_file.setdefault(u.file, []).append(u)
+        covered = {u.file for u in analysis.units if u.kind == CodeUnitKind.MODULE}
+        out: list[CodeUnit] = []
+        for file, functions in by_file.items():
+            stereotype = next((f.stereotype for f in functions if f.stereotype), None)
+            if file in covered or stereotype not in wanted or sum(f.loc for f in functions) < min_loc:
+                continue
+            if stereotype != "controller" and (file.endswith((".tsx", ".jsx")) or UI_MODULE_RE.search(file)):
+                continue
+            module = functions[0].fqn.rpartition(".")[0] or file
+            out.append(
+                CodeUnit(
+                    kind=CodeUnitKind.MODULE,
+                    name=module.rsplit("/", 1)[-1].rsplit(".", 1)[-1],
+                    fqn=module,
+                    file=file,
+                    line_start=min(f.line_start for f in functions),
+                    line_end=max(f.line_end for f in functions),
+                    language=functions[0].language,
+                    package=functions[0].package,
+                    stereotype=stereotype,
+                    children=functions,
+                )
+            )
+        return out
 
     # ------------------------------------------------------------ extraction
     def extract(
@@ -448,13 +484,14 @@ class BusinessRuleExtractor:
         classes and persisted fields are understandable without guessing."""
         index = self._unit_index(analysis)
         dep_fqns: list[str] = []
+        # A synthetic module unit speaks for its functions.
+        sources = {unit.fqn} | {c.fqn for c in unit.children if c.kind == CodeUnitKind.FUNCTION}
+        # Classes depend on types; functions call and import other functions.
+        kinds = {RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS} | (
+            {RelationKind.CALLS, RelationKind.IMPORTS} if unit.kind == CodeUnitKind.MODULE else set()
+        )
         for rel in analysis.relations:
-            if (
-                rel.source == unit.fqn
-                and rel.kind in (RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS)
-                and rel.target in index
-                and rel.target not in dep_fqns
-            ):
+            if rel.source in sources and rel.kind in kinds and rel.target in index and rel.target not in dep_fqns and rel.target not in sources:
                 dep_fqns.append(rel.target)
         blocks: list[str] = []
         for fqn in dep_fqns[:max_deps]:
@@ -463,6 +500,8 @@ class BusinessRuleExtractor:
             fields = [c for c in dep.children if c.kind == CodeUnitKind.FIELD][:max_members]
             sig = [f"{m.name}({', '.join(p.type or p.name for p in m.parameters)}){' -> ' + m.type if m.type else ''}" for m in members]
             line = f"- {dep.kind.value} {dep.name}" + (f" <{dep.stereotype}>" if dep.stereotype else "")
+            if dep.kind == CodeUnitKind.FUNCTION:
+                line += f"({', '.join(p.type or p.name for p in dep.parameters)})" + (f" -> {dep.type}" if dep.type else "")
             if dep.docstring:
                 line += f": {dep.docstring.splitlines()[0][:100]}"
             if sig:
@@ -509,7 +548,7 @@ class BusinessRuleExtractor:
                 stack = list(analysis.units)
                 while stack:
                     u = stack.pop()
-                    if u.kind in TYPE_KINDS:
+                    if u.kind in TYPE_KINDS or u.kind == CodeUnitKind.FUNCTION:
                         index[u.fqn] = u
                         stack.extend(c for c in u.children if c.kind in TYPE_KINDS)
                 self._index_cache = (analysis, index)

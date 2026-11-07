@@ -80,23 +80,73 @@ def parse_urls(pf: PyFile) -> tuple[list[tuple[str, str, int]], list[tuple[str, 
     except SyntaxError:
         return [], [], []
     routes, includes, registrations = [], [], []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+    # Module-level pattern lists, so `include(auth_patterns)` and `urlpatterns += [...]` resolve.
+    lists: dict[str, list[ast.expr]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names, value = [t.id for t in node.targets if isinstance(t, ast.Name)], node.value
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            names, value = [node.target.id], node.value
+        else:
             continue
-        name = _dotted(node.func) or ""
-        short = name.rsplit(".", 1)[-1]
-        if short in ("path", "re_path", "url") and len(node.args) >= 2 and (pattern := _str(node.args[0])) is not None:
-            target = node.args[1]
+        for name in names:
+            lists.setdefault(name, []).extend(_elements(value))
+
+    def walk(elements: list[ast.expr], prefix: str, seen: frozenset[str]) -> None:
+        for el in elements:
+            if isinstance(el, ast.Starred):
+                el = el.value
+            if isinstance(el, ast.Name):
+                if el.id in lists and el.id not in seen:
+                    walk(lists[el.id], prefix, seen | {el.id})
+                continue
+            if isinstance(el, (ast.List, ast.Tuple, ast.BinOp)):
+                walk(_elements(el), prefix, seen)
+                continue
+            if not isinstance(el, ast.Call) or (_dotted(el.func) or "").rsplit(".", 1)[-1] not in ("path", "re_path", "url") or len(el.args) < 2:
+                continue
+            pattern = _str(el.args[0])
+            if pattern is None:
+                continue
+            full = prefix + pattern
+            target = el.args[1]
             if isinstance(target, ast.Call) and (_dotted(target.func) or "").rsplit(".", 1)[-1] == "include":
                 inc = target.args[0] if target.args else None
-                mod = _str(inc) or (_str(inc.elts[0]) if isinstance(inc, ast.Tuple) and inc.elts else None)
-                if mod:
-                    includes.append((_django_path(pattern), mod))
+                if isinstance(inc, ast.Tuple) and inc.elts:
+                    inc = inc.elts[0]  # (patterns_or_module, app_name)
+                if (mod := _str(inc)) is not None:
+                    includes.append((_django_path(full), mod))
+                elif inc is not None:
+                    # Inline pattern lists keep the enclosing prefix: `path("upload/", include([path("start/", ...)]))`.
+                    walk([inc], full, seen)
             elif (ref := _view_ref(target)) is not None:
-                routes.append((_django_path(pattern), ref, node.lineno))
-        elif short == "register" and len(node.args) >= 2 and (prefix := _str(node.args[0])) is not None and (ref := _dotted(node.args[1])):
+                routes.append((_django_path(full), ref, el.lineno))
+
+    if "urlpatterns" in lists:
+        walk(lists["urlpatterns"], "", frozenset({"urlpatterns"}))
+    else:
+        walk([n for n in ast.walk(tree) if isinstance(n, ast.Call)], "", frozenset())
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and (_dotted(node.func) or "").rsplit(".", 1)[-1] == "register"
+            and len(node.args) >= 2
+            and (prefix := _str(node.args[0])) is not None
+            and (ref := _dotted(node.args[1]))
+        ):
             registrations.append((_django_path(prefix), ref, node.lineno))
     return routes, includes, registrations
+
+
+def _elements(value: ast.expr) -> list[ast.expr]:
+    """Items of a list/tuple literal, including `[...] + [...]` concatenations and references to other lists."""
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return list(value.elts)
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _elements(value.left) + _elements(value.right)
+    if isinstance(value, ast.Name):
+        return [value]
+    return []
 
 
 def resolve_django_endpoints(parsed: list[PyFile], units_by_fqn: dict[str, CodeUnit]) -> list[Endpoint]:
@@ -218,6 +268,6 @@ def classify_django(unit: CodeUnit) -> str | None:
         return "entity"
     if bases & {"ModelSerializer", "Serializer", "ModelForm", "Form"}:
         return "entity"
-    if bases & {"Manager", "QuerySet"}:
+    if any(b.endswith(("Manager", "QuerySet")) for b in bases):
         return "repository"
     return None

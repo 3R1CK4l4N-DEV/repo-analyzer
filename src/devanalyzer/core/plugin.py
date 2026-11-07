@@ -35,6 +35,22 @@ class PluginRegistry:
         return sorted([(p, s) for p, s in scored if s > threshold], key=lambda x: x[1], reverse=True)
 
 
+TEST_DIRS = {"test", "tests", "__tests__", "e2e", "spec", "testing"}
+
+
+def is_test_path(rel_path: str) -> bool:
+    """Test sources describe checks, not the system: they are neither architecture nor business-rule candidates."""
+    parts = rel_path.replace("\\", "/").split("/")
+    name = parts[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return (
+        any(p in TEST_DIRS for p in parts[:-1])
+        or name.startswith("test_")
+        or name == "conftest.py"
+        or stem.endswith((".spec", ".test", "_test", "_tests", ".e2e-spec"))
+    )
+
+
 def language_ratio(files: list[SourceFile], *languages: Language) -> float:
     code_files = [f for f in files if f.language is not None]
     if not code_files:

@@ -29,6 +29,11 @@ from devanalyzer.core.source_text import without_comments
 
 MANIFESTS = ("pom.xml", "build.gradle", "build.gradle.kts", "package.json", "pyproject.toml", "requirements.txt")
 PATH_LITERAL_RE = re.compile(r"""["'`]((?:https?://[\w.\-:]+)?(/[A-Za-z0-9_\-{}:$./]*[A-Za-z0-9_}])+)["'`]""")
+BASE_URL_RE = re.compile(r"""["'`](https?://[\w.\-]+(?::\d+)?)/?["'`]""")
+# `to="/owners"`, `href="/vets"`, `router.push("/x")`, `redirect("/login")`: browser navigation, not a service call.
+NAVIGATION_BEFORE_RE = re.compile(r"""(?:\b(?:to|href|src|action|routerLink|formAction)\s*=\s*|\.(?:push|replace)\(\s*|\b(?:navigate|redirect)\(\s*)$""")
+GATEWAY_URI_RE = re.compile(r"""uri\s*[:=]\s*["']?lb://([\w.\-]+)""")
+GATEWAY_PATH_RE = re.compile(r"""Path\s*=\s*([^\s,"'\]]+)""")
 FEIGN_RE = re.compile(r"""@FeignClient\s*\(([^)]*)\)""")
 NAME_KW_RE = re.compile(r"""(?:name|value|url)\s*=\s*["']([^"']+)["']""")
 PRODUCER_RES = [
@@ -99,6 +104,19 @@ class WorkspaceAnalysis(BaseModel):
     unresolved_calls: list[dict] = Field(default_factory=list)  # external URLs/paths that matched no project
 
 
+def _common_prefix(names: list[str]) -> str:
+    """Longest prefix shared by two or more names, cut back to a `-`/`.` boundary ("" when there is none)."""
+    if len(names) < 2:
+        return ""
+    first, last = min(names), max(names)
+    end = 0
+    while end < min(len(first), len(last)) and first[end] == last[end]:
+        end += 1
+    shared = first[:end]
+    boundary = max(shared.rfind("-"), shared.rfind("."))
+    return shared[: boundary + 1] if boundary > 0 else ""
+
+
 def _norm_path(path: str) -> str:
     path = re.sub(r"https?://[^/]+", "", path)
     path = re.sub(r"\$\{[^}]*\}|\{[^}]*\}|:[A-Za-z_]\w*", "*", path)
@@ -112,8 +130,10 @@ def _path_matches(call: str, endpoint: str) -> bool:
     # the literal may carry a prefix (/api/v1); align on the endpoint's length from the end
     tail = c[-len(e) :]
     pairs = list(zip(tail, e))
-    # at least one concrete (non-wildcard) segment must agree, so "/{id}" alone never matches anything
-    return all(a == b or a == "*" or b == "*" for a, b in pairs) and any(a == b and a != "*" for a, b in pairs)
+    # Only the endpoint's parameters accept anything; a variable in the caller (`/owners/${id}`) never stands in
+    # for a fixed segment (`/owners/{ownerId}/pets`). At least one concrete segment must agree, so "/{id}" alone
+    # never matches anything.
+    return all(a == b or b == "*" for a, b in pairs) and any(a == b and a != "*" for a, b in pairs)
 
 
 class WorkspaceAnalyzer:
@@ -176,10 +196,46 @@ class WorkspaceAnalyzer:
                                     detail=nm.group(1),
                                 )
                             )
+                for m in GATEWAY_URI_RE.finditer(content):
+                    # Spring Cloud Gateway: `uri: lb://customers-service` followed by its `Path=/api/customer/**` predicate.
+                    target = self._project_for_name(m.group(1), names)
+                    route = GATEWAY_PATH_RE.search(content, m.end(), m.end() + 400)
+                    label = f"gateway {route.group(1)}" if route else "gateway"
+                    if target and target != ref.name and (target, label) not in seen:
+                        seen.add((target, label))
+                        links.append(
+                            ServiceLink(
+                                kind="http",
+                                source=ref.name,
+                                target=target,
+                                label=label,
+                                evidence_file=f.rel_path,
+                                evidence_line=content.count("\n", 0, m.start()) + 1,
+                                detail=f"lb://{m.group(1)}",
+                            )
+                        )
+                for m in BASE_URL_RE.finditer(content):
+                    # `"http://visits-service/"` + `"pets/visits"`: the host alone still names the dependency.
+                    target = self._project_for_name(m.group(1), names)
+                    if target and target != ref.name and (target, "base url") not in seen:
+                        seen.add((target, "base url"))
+                        links.append(
+                            ServiceLink(
+                                kind="http",
+                                source=ref.name,
+                                target=target,
+                                label="base url",
+                                evidence_file=f.rel_path,
+                                evidence_line=content.count("\n", 0, m.start()) + 1,
+                                detail=m.group(1),
+                            )
+                        )
                 for m in PATH_LITERAL_RE.finditer(content):
                     literal = m.group(1)
                     norm = _norm_path(literal)
                     if norm.count("/") < 1 or literal.endswith((".js", ".css", ".png", ".html", ".svg", ".ts", ".java", ".py")):
+                        continue
+                    if NAVIGATION_BEFORE_RE.search(content, max(0, m.start() - 40), m.start()):
                         continue
                     host_target = None
                     if literal.startswith("http"):
@@ -222,9 +278,15 @@ class WorkspaceAnalyzer:
             return None
         if key in names:
             return names[key]
+        # Repositories often prefix every module (`spring-petclinic-customers-service`) while the service id
+        # on the wire is `customers-service`: compare without the prefix shared by all projects.
+        prefix = _common_prefix([n.replace("_", "-") for n in names])
 
         def alias(value: str) -> str:
-            return value.replace("_", "-").removesuffix("-service")
+            value = value.replace("_", "-")
+            if prefix and value.startswith(prefix):
+                value = value[len(prefix) :]
+            return value.removesuffix("-service")
 
         matches = {real for low, real in names.items() if alias(low) == alias(key)}
         return next(iter(matches)) if len(matches) == 1 else None
