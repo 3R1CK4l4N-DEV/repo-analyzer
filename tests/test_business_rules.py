@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from devanalyzer.core.models import RuleStatus
 from devanalyzer.kb.store import KnowledgeBase
 from devanalyzer.llm.business_rules import BusinessRuleExtractor, parse_llm_json
@@ -157,6 +159,112 @@ def test_kb_ingest_dedups_and_preserves_review(spring_analysis, fixtures, tmp_pa
         assert summary["rules"] == 2 and summary["runs"] == 3
 
 
+def test_glossary_terms_merge_case_insensitively(spring_analysis, fixtures):
+    class SpellingProvider(FakeProvider):
+        def generate(self, prompt, system=None, temperature=0.0):
+            unit = prompt.split("Unit: ", 1)[1].split()[0]
+            spelling = "Entidad" if unit.endswith("AccountService") else "entidad"
+            return json.dumps(
+                {
+                    "rules": [{"statement": f"{unit} owns one {spelling}", "domain_terms": [spelling], "line_start": 1, "line_end": 2}],
+                    "glossary": [{"term": spelling, "definition": "A domain object" if spelling == "entidad" else ""}],
+                }
+            )
+
+    result = BusinessRuleExtractor(SpellingProvider()).extract(spring_analysis, fixtures / "java_spring")
+    assert len(result.rules) >= 2
+    assert [t.term for t in result.glossary] == ["Entidad"]
+    term = result.glossary[0]
+    assert term.definition == "A domain object" and sorted(term.rules) == sorted(r.id for r in result.rules)
+    assert all(r.domain_terms == ["Entidad"] for r in result.rules)
+
+
+def test_kb_migrates_legacy_rule_ids_keeping_human_review(tmp_path):
+    from devanalyzer.core.models import BusinessRule, Evidence, GlossaryTerm, RuleExtractionResult, RuleGroup
+    from devanalyzer.llm.business_rules import legacy_rule_id, rule_id
+
+    file = "src/Account.java"
+    statement, sibling = "The balance of an active account must be >= 10.", "The balance of an active account must be <= 10."
+    old_id, new_id = legacy_rule_id(statement, file), rule_id(statement, file)
+    assert old_id != new_id and legacy_rule_id(sibling, file) == old_id
+
+    def extraction(rules):
+        return RuleExtractionResult(
+            project_name="bank", model="m", rules=rules, glossary=[GlossaryTerm(term="Balance", definition="", rules=[r.id for r in rules])]
+        )
+
+    evidence = [Evidence(file=file, line_start=10, line_end=12)]
+    stored = BusinessRule(id=old_id, statement=statement, category="validation", source_unit="Account", domain_terms=["Balance"], evidence=evidence)
+    with KnowledgeBase(tmp_path / "kb.sqlite") as kb:
+        kb.ingest(extraction([stored]))
+        kb.set_statement(old_id, "Active accounts keep at least 10 in balance.")
+        kb.set_status(old_id, RuleStatus.CONFIRMED, "checked with finance")
+        other = BusinessRule(id="BR-other", statement="x", source_unit="Account", tags=[f"duplicate-of/{old_id}"], evidence=evidence)
+        kb.ingest(extraction([other]))
+        kb.save_groups("bank", [RuleGroup(kind="module", key="bank", rule_ids=[old_id, "BR-other"], duplicates=[[old_id, "BR-other"]])], [])
+        kb.conn.execute("CREATE TABLE embeddings (project TEXT, doc_id TEXT, kind TEXT)")
+        kb.conn.execute("INSERT INTO embeddings VALUES ('bank', ?, 'business_rule')", (f"rule:{old_id}",))
+
+        # Re-extraction with the new ID scheme: both symbol variants now survive, and the review follows the row.
+        fresh = [
+            BusinessRule(id=rule_id(s, file), statement=s, category="validation", source_unit="Account", domain_terms=["Balance"], evidence=evidence)
+            for s in (statement, sibling)
+        ]
+        counts = kb.ingest(extraction(fresh))
+        assert (counts["new"], counts["seen"], counts["changed"]) == (1, 1, 0)
+        assert kb.rule(old_id) is None
+        migrated = kb.rule(new_id)
+        assert migrated.status == RuleStatus.CONFIRMED and migrated.review_note == "checked with finance"
+        assert migrated.statement == "Active accounts keep at least 10 in balance."
+        assert [h["change"] for h in kb.history(new_id)] == ["new"] and kb.history(old_id) == []
+        assert kb.terms(project="bank")[0].rules == sorted([new_id, "BR-other", rule_id(sibling, file)])
+        assert kb.rule("BR-other").tags == [f"duplicate-of/{new_id}"]
+        group = kb.groups(project="bank")[0]
+        assert group.rule_ids == [new_id, "BR-other"] and group.duplicates == [[new_id, "BR-other"]]
+        assert kb.conn.execute("SELECT doc_id FROM embeddings").fetchone()[0] == f"rule:{new_id}"
+        assert kb.rules(project="bank", status="inferred")[0].statement == sibling
+        assert kb.ingest(extraction(fresh))["seen"] == 2
+
+
+def test_kb_merges_legacy_row_when_both_id_variants_exist(tmp_path):
+    from devanalyzer.core.models import BusinessRule, Evidence, GlossaryTerm, RuleExtractionResult, RuleGroup
+    from devanalyzer.llm.business_rules import legacy_rule_id, rule_id
+
+    file, statement = "src/Account.java", "The balance of an active account must be >= 10."
+    old_id, new_id = legacy_rule_id(statement, file), rule_id(statement, file)
+    evidence = [Evidence(file=file, line_start=10, line_end=12)]
+
+    def extraction(rules):
+        return RuleExtractionResult(
+            project_name="bank", model="m", rules=rules, glossary=[GlossaryTerm(term="Balance", definition="", rules=[r.id for r in rules])]
+        )
+
+    with KnowledgeBase(tmp_path / "kb.sqlite") as kb:
+        kb.ingest(extraction([BusinessRule(id=old_id, statement=statement, source_unit="Account", evidence=evidence)]))
+        kb.set_status(old_id, RuleStatus.CONFIRMED, "checked with finance")
+        # Without evidence no legacy lookup happens, so the new id lands as a second, verifier-rejected row.
+        verified = BusinessRule(id=new_id, statement=statement, source_unit="Account", status=RuleStatus.REJECTED, tags=[f"duplicate-of/{old_id}"])
+        kb.ingest(extraction([verified]))
+        kb.save_groups("bank", [RuleGroup(kind="module", key="bank", rule_ids=[old_id, new_id], duplicates=[[old_id, new_id]])], [])
+        kb.conn.execute("CREATE TABLE embeddings (project TEXT, doc_id TEXT, PRIMARY KEY (project, doc_id))")
+        kb.conn.executemany("INSERT INTO embeddings VALUES ('bank', ?)", [(f"rule:{old_id}",), (f"rule:{new_id}",)])
+        assert kb.summary()["rules"] == 2
+
+        fresh = BusinessRule(id=new_id, statement=statement, source_unit="Account", evidence=evidence)
+        counts = kb.ingest(extraction([fresh]))
+        assert (counts["new"], counts["seen"], counts["changed"]) == (0, 0, 1)
+        assert kb.summary()["rules"] == 1 and kb.rule(old_id) is None
+        merged = kb.rule(new_id)
+        assert merged.status == RuleStatus.CONFIRMED and merged.review_note == "checked with finance"
+        assert merged.tags == []  # not a duplicate of itself
+        assert kb.terms(project="bank")[0].rules == [new_id]
+        group = kb.groups(project="bank")[0]
+        assert group.rule_ids == [new_id] and group.duplicates == [[new_id]]
+        assert [r[0] for r in kb.conn.execute("SELECT doc_id FROM embeddings").fetchall()] == [f"rule:{new_id}"]
+        assert kb.history(old_id) == []
+        assert kb.ingest(extraction([fresh]))["seen"] == 1
+
+
 def test_merge_near_duplicates_keeps_all_evidence():
     from devanalyzer.core.models import BusinessRule, Evidence
     from devanalyzer.llm.business_rules import merge_near_duplicates
@@ -201,4 +309,74 @@ def test_merge_near_duplicates_keeps_all_evidence():
     out = merge_near_duplicates([a, b, c, d, e])
     assert [r.id for r in out] == ["A", "C", "D"]
     assert len(out[0].evidence) == 2 and out[0].confidence == 0.9 and "merged" in out[0].tags
-    assert len(out[2].evidence) == 1  # same span, same category, overlapping wording -> merged (evidence already identical start)
+    assert {(ev.line_start, ev.line_end) for ev in out[2].evidence} == {(63, 64), (63, 65)}
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Customers must approve the transfer before closing the account.", "Customers must not approve the transfer before closing the account."),
+        ("La cuenta puede cerrarse cuando existe saldo pendiente.", "La cuenta no puede cerrarse cuando existe saldo pendiente."),
+        ("An account must have at least 1 active owner.", "An account must have at least 2 active owners."),
+        ("An account must have at least 10 active owners.", "An account must have at least 20 active owners."),
+        ("The balance of an active account must be >= 10.", "The balance of an active account must be <= 10."),
+        ("The balance of an active account must be above 10.", "The balance of an active account must be below 10."),
+        ("Customers must approve the transfer before closing the account.", "Customers may approve the transfer before closing the account."),
+        ("Customers can approve the transfer before closing the account.", "Customers can't approve the transfer before closing the account."),
+        ("Transfers are not allowed when the account is frozen.", "Transfers are allowed when the account is not frozen."),
+    ],
+)
+def test_dedup_preserves_different_business_constraints(first, second):
+    from devanalyzer.core.models import BusinessRule, Evidence
+    from devanalyzer.llm.business_rules import merge_near_duplicates
+
+    rules = [
+        BusinessRule(id=str(i), statement=statement, source_unit="AccountService", evidence=[Evidence(file="f.java", line_start=10, line_end=15)])
+        for i, statement in enumerate((first, second))
+    ]
+    assert [r.statement for r in merge_near_duplicates(rules)] == [first, second]
+
+
+def test_dedup_preserves_categories_and_glossary_references(spring_analysis, fixtures):
+    from devanalyzer.core.models import BusinessRule
+    from devanalyzer.llm.business_rules import merge_near_duplicates
+
+    statement = "An account must have 10 digits."
+    validation = BusinessRule(id="A", statement=statement, category="validation")
+    authorization = BusinessRule(id="B", statement=statement, category="authorization")
+    assert len(merge_near_duplicates([validation, authorization])) == 2
+
+    class DuplicateProvider(FakeProvider):
+        def generate(self, prompt, system=None, temperature=0.0):
+            return json.dumps(
+                {
+                    "rules": [
+                        {"statement": statement, "category": "validation", "domain_terms": ["Account"], "line_start": 35, "line_end": 37},
+                        {
+                            "statement": "An account must have exactly 10 digits.",
+                            "category": "validation",
+                            "domain_terms": ["Account", "Number"],
+                            "line_start": 35,
+                            "line_end": 38,
+                        },
+                        {"statement": statement, "category": "validation", "domain_terms": ["Audit"], "line_start": 46, "line_end": 48},
+                    ],
+                    "glossary": [],
+                }
+            )
+
+    result = BusinessRuleExtractor(DuplicateProvider()).extract(spring_analysis, fixtures / "java_spring", stereotypes={"service"})
+    assert len(result.rules) == 1
+    assert len(result.rules[0].evidence) == 3
+    assert {term.term for term in result.glossary} == {"Account", "Number", "Audit"}
+    assert all(term.rules == [result.rules[0].id] for term in result.glossary)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [(">= 10", "<= 10"), ("-1", "1"), ("1%", "1"), ("$1", "€1"), ("1% plus 2", "1 plus 2%"), ("-1 plus 2", "1 plus -2")]
+)
+def test_rule_ids_keep_meaningful_symbols(first, second):
+    from devanalyzer.llm.business_rules import rule_id
+
+    assert rule_id(f"The required account balance is {first}.", "f.java") != rule_id(f"The required account balance is {second}.", "f.java")
+    assert rule_id("A deposit requires approval.", "f.java") == rule_id("a deposit requires approval", "f.java")

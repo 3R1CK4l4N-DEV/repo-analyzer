@@ -60,10 +60,12 @@ class ObsidianVault:
         self.root = Path(vault_dir)
         self.base = self.root / project_folder if project_folder else self.root
         self.written: list[Path] = []
+        self.updated: list[Path] = []
         self._endpoints_by_owner: dict[str, list] = defaultdict(list)
         self._language_by_fqn: dict[str, str] = {}
         self._ensured_dirs: set[Path] = set()
         self._pending: list[tuple[Path, str]] = []
+        self._queued: dict[str, Path] = {}
         self._rules_by_id: dict[str, BusinessRule] = {}
         self._types: list[CodeUnit] = []
         self._graph: KnowledgeGraph | None = None
@@ -81,6 +83,11 @@ class ObsidianVault:
         decisions: list[dict] | None = None,
         groups: list[RuleGroup] | None = None,
     ) -> list[Path]:
+        self.written = []
+        self.updated = []
+        self._pending = []
+        self._queued = {}
+        self._generated_at = datetime.now(UTC).isoformat(timespec="seconds")
         rules = rules or []
         glossary = glossary or []
         self._rules_by_id = {r.id: r for r in rules}
@@ -571,7 +578,10 @@ class ObsidianVault:
         canvas_dir = self.base / FOLDERS["canvas"]
         canvas_dir.mkdir(parents=True, exist_ok=True)
         path = canvas_dir / "architecture.canvas"
-        path.write_text(json.dumps({"nodes": nodes, "edges": edges}, indent=2), encoding="utf-8")
+        content = json.dumps({"nodes": nodes, "edges": edges}, indent=2)
+        if not path.exists() or path.read_text(encoding="utf-8") != content:
+            path.write_text(content, encoding="utf-8")
+            self.updated.append(path)
         self.written.append(path)
 
     # ------------------------------------------------------------ helpers
@@ -611,32 +621,44 @@ class ObsidianVault:
             folder_path.mkdir(parents=True, exist_ok=True)
             self._ensured_dirs.add(folder_path)
         path = folder_path / f"{safe_name(title)}.md"
+        # Titles that only differ in case are one file on Windows/macOS; the first note wins deterministically
+        # instead of two threads racing over the same path in `_flush`.
+        key = str(path).casefold()
+        if key in self._queued:
+            return self._queued[key]
+        self._queued[key] = path
         self._pending.append((path, frontmatter(fm) + f"{GENERATED_START}\n{body.rstrip()}\n{GENERATED_END}"))
         self.written.append(path)
         return path
 
     def _flush(self) -> None:
-        def write_one(item: tuple[Path, str]) -> None:
+        def write_one(item: tuple[Path, str]) -> Path | None:
             path, generated = item
             try:
-                manual = self._manual_part(path.read_text(encoding="utf-8"))
+                existing = path.read_text(encoding="utf-8")
+                before, after = self._manual_sections(existing)
             except FileNotFoundError:
-                manual = MANUAL_HINT
-            path.write_text(generated + manual, encoding="utf-8")
+                existing, before, after = "", "", MANUAL_HINT
+            header, marker, body = generated.partition(GENERATED_START)
+            content = header + before + marker + body + after
+            # Regeneration time alone must not dirty every note in an Obsidian vault.
+            if re.sub(r"(?m)^generated_at:.*\n", "", content, count=1) == re.sub(r"(?m)^generated_at:.*\n", "", existing, count=1):
+                return None
+            path.write_text(content, encoding="utf-8")
+            return path
 
         pending, self._pending = self._pending, []
         if len(pending) < 64:
-            for item in pending:
-                write_one(item)
+            self.updated.extend(p for item in pending if (p := write_one(item)) is not None)
             return
         with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(write_one, pending))
+            self.updated.extend(p for p in pool.map(write_one, pending) if p is not None)
 
     @staticmethod
-    def _manual_part(existing: str) -> str:
-        end = existing.find(GENERATED_END)
-        if end == -1:
+    def _manual_sections(existing: str) -> tuple[str, str]:
+        stripped = re.sub(r"^---\n.*?\n---\n", "", existing, count=1, flags=re.S)
+        start, end = stripped.find(GENERATED_START), stripped.find(GENERATED_END)
+        if start == -1 or end < start:
             # Legacy/unknown note: keep everything (minus frontmatter) as manual content.
-            stripped = re.sub(r"^---\n.*?\n---\n", "", existing, count=1, flags=re.S)
-            return "\n\n" + stripped.strip() + "\n" if stripped.strip() else MANUAL_HINT
-        return existing[end + len(GENERATED_END) :] or MANUAL_HINT
+            return "", "\n\n" + stripped.strip() + "\n" if stripped.strip() else MANUAL_HINT
+        return stripped[:start], stripped[end + len(GENERATED_END) :] or MANUAL_HINT

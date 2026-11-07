@@ -3,6 +3,7 @@ from __future__ import annotations
 from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, CodeUnitKind, Language, LanguageAnalysis, SourceFile
+from devanalyzer.core.parse_cache import ParseCache
 from devanalyzer.core.plugin import language_ratio
 from devanalyzer.languages.python.django import classify_django, resolve_django_endpoints
 from devanalyzer.languages.python.frameworks import apply_stereotypes, extract_relations
@@ -14,6 +15,9 @@ SKIP_PREFIXES = ("tests/", "test_", "conftest")
 class PythonPlugin:
     language = Language.PYTHON
 
+    def __init__(self, *, incremental: bool = False):
+        self._cache = ParseCache() if incremental else None
+
     def detect(self, files: list[SourceFile]) -> float:
         ratio = language_ratio(files, Language.PYTHON)
         has_build = any(f.name.lower() in ("pyproject.toml", "requirements.txt", "setup.py") for f in files)
@@ -23,8 +27,9 @@ class PythonPlugin:
 
     def analyze(self, files: list[SourceFile], builds: list[BuildInfo], settings: Settings) -> LanguageAnalysis:
         code = [f for f in files if f.language == Language.PYTHON]
-        parser = PythonParser(package_dirs([f.rel_path for f in code]))
-        parsed = [parser.parse(f) for f in code]
+        packages = package_dirs([f.rel_path for f in code])
+        parser = PythonParser(packages)
+        parsed = self._cache.parse(code, parser.parse, frozenset(packages)) if self._cache is not None else [parser.parse(f) for f in code]
         project_modules = {pf.module for pf in parsed} | {pf.module.rsplit(".__init__", 1)[0] for pf in parsed if pf.module.endswith("__init__")}
 
         units = [u for pf in parsed for u in pf.units]

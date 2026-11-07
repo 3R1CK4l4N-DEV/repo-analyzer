@@ -147,6 +147,50 @@ def _default_out(path: Path) -> Path:
     return path / get_settings().output_dir_name
 
 
+@app.command("watch")
+def watch_project(
+    path: Path = typer.Argument(..., exists=True, file_okay=False, help="Project directory"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Artifact directory (default: <project>/.devanalyzer)"),
+    interval: float = typer.Option(1.0, "--interval", min=0.1, help="Seconds between scans"),
+    debounce: float = typer.Option(0.5, "--debounce", min=0.0, help="Wait for changes to settle before publishing"),
+    vault: bool = typer.Option(True, "--vault/--no-vault", help="Refresh changed Obsidian notes and archive removed notes"),
+    graphml: bool = typer.Option(True, "--graphml/--no-graphml", help="Export GraphML as well as JSON"),
+    once: bool = typer.Option(False, "--once", help="Publish once and exit"),
+):
+    """Watch source changes; reuse parsing and refresh the graph, snapshot and Obsidian vault."""
+    import time
+
+    from devanalyzer.core.watch import ProjectWatcher
+
+    try:
+        watcher = ProjectWatcher(path, get_settings(), out=out, debounce=debounce, vault=vault, graphml=graphml)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not once:
+        console.print(f"Watching {watcher.root} every {interval:g}s (Ctrl+C to stop)")
+    try:
+        while True:
+            try:
+                result = watcher.poll()
+                if result is not None:
+                    console.print(
+                        f"[green]{result.analysis.project_name}[/green]: "
+                        f"+{len(result.added)} ~{len(result.modified)} -{len(result.removed)} files; "
+                        f"{len(result.updated_notes)} notes updated, {len(result.archived_notes)} archived "
+                        f"({result.elapsed:.2f}s) -> {watcher.out}"
+                    )
+            except (OSError, ValueError) as exc:
+                console.print(f"[red]Refresh failed: {exc}[/red]")
+                if once:
+                    raise typer.Exit(1) from exc
+            if once:
+                return
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("Watch stopped.")
+
+
 @graph_app.command("build")
 def graph_build(
     path: Path = typer.Argument(..., exists=True, help="Project root"),

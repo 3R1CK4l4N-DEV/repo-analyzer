@@ -43,13 +43,13 @@ def language_ratio(files: list[SourceFile], *languages: Language) -> float:
     return hits / len(code_files)
 
 
-def default_registry() -> PluginRegistry:
+def default_registry(*, incremental: bool = False) -> PluginRegistry:
     from devanalyzer.languages.java.plugin import JavaPlugin
     from devanalyzer.languages.node.plugin import NodePlugin
     from devanalyzer.languages.python.plugin import PythonPlugin
 
     registry = PluginRegistry()
-    registry.register(JavaPlugin())
-    registry.register(NodePlugin())
-    registry.register(PythonPlugin())
+    registry.register(JavaPlugin(incremental=incremental))
+    registry.register(NodePlugin(incremental=incremental))
+    registry.register(PythonPlugin(incremental=incremental))
     return registry

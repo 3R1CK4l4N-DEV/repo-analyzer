@@ -66,6 +66,17 @@ def test_endpoints(spring_analysis):
     assert ep.file.endswith("AccountController.java") and ep.line == 33
 
 
+def test_mapping_path_forms():
+    from devanalyzer.languages.java.spring import _path_from_args
+
+    assert _path_from_args('"/vets"') == "/vets"
+    assert _path_from_args('{ "/vets", "/vets.html" }') == "/vets"  # bare array literal (Petclinic VetController)
+    assert _path_from_args('value = "/owners", produces = "application/json"') == "/owners"
+    assert _path_from_args('path = {"/a", "/b"}') == "/a"
+    assert _path_from_args('produces = "application/json"') == ""
+    assert _path_from_args(None) == ""
+
+
 def test_relations(spring_analysis):
     rels = {(r.source, r.target, r.kind) for r in spring_analysis.relations}
     assert ("com.acme.bank.controller.AccountController", "com.acme.bank.service.AccountService", RelationKind.DEPENDS_ON) in rels

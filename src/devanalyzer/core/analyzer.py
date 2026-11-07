@@ -4,7 +4,7 @@ from pathlib import Path
 
 from devanalyzer.config import Settings, get_settings
 from devanalyzer.core.build_detectors import detect_builds
-from devanalyzer.core.models import ProjectAnalysis, ProjectMetrics
+from devanalyzer.core.models import ProjectAnalysis, ProjectMetrics, SourceFile
 from devanalyzer.core.plugin import PluginRegistry, default_registry
 from devanalyzer.core.reader import ProjectReader
 from devanalyzer.core.schema import detect_schema, map_entities
@@ -13,14 +13,14 @@ DETECTION_THRESHOLD = 0.05
 
 
 class ProjectAnalyzer:
-    def __init__(self, settings: Settings | None = None, registry: PluginRegistry | None = None):
+    def __init__(self, settings: Settings | None = None, registry: PluginRegistry | None = None, *, incremental: bool = False):
         self.settings = settings or get_settings()
-        self.registry = registry or default_registry()
+        self.registry = registry or default_registry(incremental=incremental)
         self.reader = ProjectReader(self.settings)
 
-    def run(self, path: str | Path) -> ProjectAnalysis:
+    def run(self, path: str | Path, *, files: list[SourceFile] | None = None) -> ProjectAnalysis:
         root = Path(path).resolve()
-        files = self.reader.read(root)
+        files = self.reader.read(root) if files is None else files
         builds = sorted(detect_builds(files), key=lambda b: (b.manifest_path.count("/"), b.manifest_path))
 
         analysis = ProjectAnalysis(

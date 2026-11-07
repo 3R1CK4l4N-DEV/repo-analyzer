@@ -1,6 +1,6 @@
 # DevAnalyzer — Estado actual y mejoras a definir
 
-Fecha: 2026-11-05 (actualizado tras iteración 3) · Rama `main` (local, 27 commits, sin push) · 72/72 tests
+Fecha: 2026-11-05 (actualizado tras iteración 4) · Rama `main` (local, 32 commits, sin push) · 129/129 tests
 
 ---
 
@@ -16,6 +16,9 @@ devanalyzer rules list|review|glossary→ knowledge base SQLite con revisión hu
 devanalyzer vault                     → vault Obsidian (notas, MOCs, canvas, Dataview, secciones manuales)
 devanalyzer serve                     → servidor MCP con 13 tools para agentes IA
 devanalyzer report | snapshot | diff  → HTML/MD autocontenido, diff estructural entre corridas
+devanalyzer index | search            → embeddings en SQLite y búsqueda semántica (también RAG en `rules extract`)
+devanalyzer workspace <dir>           → varios repos: enlaces HTTP/eventos/tablas compartidas, mapa Mermaid
+devanalyzer watch <repo> [--once]     → re-análisis incremental al guardar; refresca grafo, snapshot y notas del vault
 ```
 
 ### 1.2 Milestones del megaplan
@@ -48,6 +51,11 @@ devanalyzer report | snapshot | diff  → HTML/MD autocontenido, diff estructura
 | G2 | Flujos end-to-end por endpoint (capas, tablas, reglas, read/write); `70 Flows`, MOC, MCP `get_flows` | Hecho | `ad06da8` |
 | G1 | Búsqueda semántica: embeddings en SQLite (Ollama `nomic-embed-text` / OpenAI), `index`/`search`, MCP `semantic_search` | Hecho (código); **pendiente validar con modelo real: `ollama pull nomic-embed-text` falló por red** | `8dde065` |
 | G4 | Workspaces multi-repo: enlaces HTTP (literales/Feign), eventos (Kafka/Rabbit/SQS/Quarkus/NestJS), tablas compartidas; `workspace.md` con mapa Mermaid | Hecho | `3cd53b5` |
+| I4-1 | RAG: contexto semántico en el prompt de reglas; dedup estructural previo al LLM con firma de restricción (negaciones, límites, `>=`/`<=`); rúbrica "técnico vs negocio" más estricta | Hecho | `0a953b4` |
+| I4-2 | Workspace en vault (`Related Services`) y MCP `get_workspace_links` | Hecho | `4aae62a` |
+| L3/L4 | Django (urls.py, `include()` múltiple, DRF routers, CBV) y Next.js (App Router `route.ts`/`page.tsx`, Pages Router, segmentos dinámicos, grupos) | Hecho | `d193ffd` |
+| X2 | `devanalyzer watch`: `ParseCache` por hash de contenido en los 4 parsers, debounce, publicación atómica de `graph/analysis/watch-notes`, notas eliminadas → `90 Archive`, sync Obsidian→KB previo | Hecho | iter. 4 |
+| + | IDs de regla sensibles a símbolos (`>=` vs `<=`, `%`, `$`) con migración automática de la KB antigua que conserva revisiones humanas; glosario insensible a mayúsculas; notas con nombre colisionante en Windows escritas una sola vez | Hecho | iter. 4 |
 
 ### 1.3 Validación con proyectos reales
 
@@ -76,10 +84,10 @@ devanalyzer report | snapshot | diff  → HTML/MD autocontenido, diff estructura
 | Resolución de versiones heredadas de BOM Maven | Bajo | Se reporta `managed`; resolver requiere red/`mvn help:effective-pom` |
 | Heurísticas de estereotipos Python/Node por nombre | Medio | Falsos positivos posibles (`*Manager`, `*Model`); configurables en `languages/*/frameworks.py` |
 | Resolución de imports Node sin `tsconfig` paths/aliases (`@/…`) | Medio | Solo imports relativos; aliases quedan sin relación |
-| Kotlin detectado pero no parseado | Medio | Conteo de archivos sí; sin unidades ni relaciones |
 | Tablas Rich truncan con `…` en consola Windows legacy | Cosmético | `--json` para salida completa |
-| Sin `watch` ni re-análisis incremental de parsing | Bajo | El parsing es rápido; solo la LLM está cacheada |
-| Sin CI | Medio | Tests solo locales |
+| `watch` usa polling (lee y hashea todo el proyecto en cada ciclo) | Bajo | ~0.13 s ocioso en petclinic; `watchdog` solo si molesta en repos de >10k archivos |
+| Migración de IDs legacy exige el mismo archivo de evidencia | Bajo | Si el archivo se renombró entre corridas, la regla antigua queda huérfana (se conserva, no se borra) |
+| Dedup de reglas no equipara símbolos Unicode y ASCII (`≥` vs `>=`) | Bajo | Conservador: no fusiona; los modelos suelen emitir ASCII |
 
 ---
 
@@ -132,7 +140,7 @@ Ordenadas por valor/esfuerzo estimado. Las marcadas con **[DECISIÓN]** requiere
 | # | Mejora | Valor | Esfuerzo | Decisión requerida |
 |---|---|---|---|---|
 | X1 | ~~GitHub Actions + ruff~~ | Hecho (se activa al hacer push) | — | |
-| X2 | `devanalyzer watch`: re-análisis al guardar y regeneración de notas afectadas | Medio | Medio | No |
+| X2 | ~~`devanalyzer watch`~~ | Hecho | — | |
 | X3 | Publicar en PyPI / `pipx install devanalyzer` | Medio | Bajo | **[DECISIÓN D7]** |
 | X4 | Docker image con Ollama + DevAnalyzer para demos | Bajo | Bajo | No |
 | X5 | Logging estructurado y `--verbose`/`--quiet` | Bajo | Bajo | No |
@@ -169,7 +177,17 @@ Pendientes de decidir: **D4** (embeddings: recomiendo Ollama `nomic-embed-text` 
 
 ---
 
-## 4. Iteración 3 — completada
+## 4. Iteración 4 — completada
+
+RAG + dedup estructural → workspace en vault/MCP → Django/Next.js → corrección de bugs del review → X2 `watch`.
+
+Hallazgos relevantes:
+- La dedup por similitud de palabras fusionaba reglas opuestas ("puede" / "no puede", `>= 10` / `<= 10`, 1 vs 2 titulares). Ahora exige la misma firma de restricción (números, negaciones con contexto, palabras modales, símbolos); 9 pares adversarios en tests.
+- El `rule_id` ignoraba los símbolos, así que `>=` y `<=` compartían id y la segunda regla pisaba a la primera. El nuevo id los distingue; la KB migra la fila antigua al nuevo id (incluidas referencias en glosario, grupos, tags `duplicate-of/` y embeddings) y, si ambas variantes ya existían, las fusiona conservando la revisión humana. Comprobado sobre la KB real de petclinic: 44/44 `seen`, 0 duplicados.
+- `deepcopy` de los resultados cacheados del parser costaba más que el parseo que ahorraba (1.73 s vs 1.15 s en 3.000 clases); la caché devuelve objetos compartidos y se verifica que la clasificación es idempotente (`incremental == no incremental` en Java/Kotlin/Node/Python).
+- Dos notas cuyos títulos solo difieren en mayúsculas (`Account`/`account`, dos handlers con la misma ruta) se escribían en paralelo sobre el mismo archivo en Windows: salida no determinista entre corridas. Ahora el glosario fusiona términos sin distinguir mayúsculas y el vault escribe una sola vez por ruta.
+
+## 4a. Iteración 3 — completada
 
 L1 Kotlin → L2 Jakarta/Quarkus/Micronaut → R3+R4 → G2 flujos → G1 semántica → G4 multi-repo.
 
@@ -182,7 +200,14 @@ Hallazgos relevantes:
 
 X1 → R2 → R1 → O4 → O1 → L5, todo con tests y validado en spring-petclinic.
 
-## 5. Propuesta de iteración 4
+## 5. Propuesta de iteración 5
+
+1. **Validar G1 con el modelo real** (`ollama pull nomic-embed-text` sigue pendiente por red) y medir con `rules eval` si el RAG mejora F1 en petclinic.
+2. **X6 reporte en PR** (comentario con `diff` + reglas nuevas) cuando decidas D7.
+3. **Aliases de `tsconfig.paths`** en Node (`@/…`): hoy solo se resuelven imports relativos.
+4. **Push** cuando lo autorices (D8); CI ya está listo.
+
+## 5a. Propuesta de iteración 4 (histórico)
 
 1. **Validar G1** con `nomic-embed-text` real y usar la búsqueda semántica como RAG en el prompt de reglas (contexto relevante por similitud, no solo por dependencias).
 2. **Precisión de reglas**: dedup estructural previo al LLM (misma anotación/condición en clase padre e hija → una sola regla), y juez con rúbrica “técnico vs negocio” más estricta; meta: F1 ≥ 85% en petclinic sin perder recall.

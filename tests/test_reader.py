@@ -30,6 +30,14 @@ def test_skips_next_build_output(tmp_path, reader):
     assert [f.rel_path for f in reader.read(tmp_path)] == ["page.js"]
 
 
+def test_excludes_output_paths_without_ignoring_sibling_documents(tmp_path, reader):
+    generated = tmp_path / "docs" / "generated"
+    generated.mkdir(parents=True)
+    (generated / "page.md").write_text("generated", encoding="utf-8")
+    (tmp_path / "docs" / "design.md").write_text("manual", encoding="utf-8")
+    assert [f.rel_path for f in reader.read(tmp_path, exclude_paths=(generated,))] == ["docs/design.md"]
+
+
 def test_respects_gitignore(tmp_path):
     (tmp_path / ".gitignore").write_text("generated/\n*.log\n!important.log\n")
     (tmp_path / "generated").mkdir()

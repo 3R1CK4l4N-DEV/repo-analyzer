@@ -3,6 +3,7 @@ from __future__ import annotations
 from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics
 from devanalyzer.core.models import BuildInfo, Language, LanguageAnalysis, SourceFile
+from devanalyzer.core.parse_cache import ParseCache
 from devanalyzer.core.plugin import language_ratio
 from devanalyzer.languages.node.frameworks import TYPE_KINDS, apply_stereotypes, extract_nest_endpoints, extract_relations
 from devanalyzer.languages.node.nextjs import extract_next_endpoints
@@ -15,6 +16,9 @@ SKIP_SUFFIXES = (".d.ts", ".min.js", ".spec.ts", ".spec.js", ".test.ts", ".test.
 class NodePlugin:
     language = Language.JAVASCRIPT
 
+    def __init__(self, *, incremental: bool = False):
+        self._cache = ParseCache() if incremental else None
+
     def detect(self, files: list[SourceFile]) -> float:
         ratio = language_ratio(files, *NODE_LANGUAGES)
         has_build = any(f.name.lower() == "package.json" and "node_modules" not in f.rel_path for f in files)
@@ -25,7 +29,7 @@ class NodePlugin:
     def analyze(self, files: list[SourceFile], builds: list[BuildInfo], settings: Settings) -> LanguageAnalysis:
         code = [f for f in files if f.language in NODE_LANGUAGES and not f.name.endswith(SKIP_SUFFIXES)]
         parser = NodeParser()
-        parsed = [parser.parse(f) for f in code]
+        parsed = self._cache.parse(code, parser.parse) if self._cache is not None else [parser.parse(f) for f in code]
         project_modules = {module_id(f.rel_path) for f in code}
 
         units = [u for nf in parsed for u in nf.units]

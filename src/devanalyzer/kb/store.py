@@ -82,6 +82,21 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _replace_ids(value: Any, old: str, new: str) -> Any:
+    """Rename a rule id inside JSON columns; `duplicate-of/<id>` tags are covered by the suffix match."""
+    if isinstance(value, str):
+        if value == old:
+            return new
+        return value[: -len(old)] + new if value.endswith("/" + old) else value
+    if isinstance(value, list):
+        renamed = [_replace_ids(v, old, new) for v in value]
+        # Merging two ids into one must not leave the same id twice in a reference list.
+        return list(dict.fromkeys(renamed)) if all(isinstance(v, str) for v in renamed) else renamed
+    if isinstance(value, dict):
+        return {k: _replace_ids(v, old, new) for k, v in value.items()}
+    return value
+
+
 class KnowledgeBase:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -133,6 +148,8 @@ class KnowledgeBase:
     def _upsert_rule(self, cur: sqlite3.Cursor, rule: BusinessRule, project: str, run_id: int) -> str:
         content_hash = self._hash(rule)
         existing = cur.execute("SELECT * FROM rules WHERE id=?", (rule.id,)).fetchone()
+        if (legacy := self._legacy_row(cur, rule)) is not None:
+            existing = self._migrate_legacy(cur, legacy, existing, rule.id)
         tags = json.dumps(rule.tags)
         terms = json.dumps(rule.domain_terms)
         evidence = json.dumps([e.model_dump() for e in rule.evidence])
@@ -193,6 +210,56 @@ class KnowledgeBase:
                 (rule.id, run_id, json.dumps(dict(existing), default=str)),
             )
         return change
+
+    @staticmethod
+    def _legacy_row(cur: sqlite3.Cursor, rule: BusinessRule) -> sqlite3.Row | None:
+        """Row stored under the pre-symbol ID scheme for this very statement (or its human-edited original)."""
+        from devanalyzer.llm.business_rules import legacy_rule_id
+
+        if not rule.evidence:
+            return None
+        legacy_id = legacy_rule_id(rule.statement, rule.evidence[0].file)
+        if legacy_id == rule.id:
+            return None
+        row = cur.execute("SELECT * FROM rules WHERE id=?", (legacy_id,)).fetchone()
+        if row is None:
+            return None
+        same = row["statement"] == rule.statement or f"original statement: {rule.statement}" in (row["rationale"] or "")
+        return row if same else None
+
+    def _migrate_legacy(self, cur: sqlite3.Cursor, legacy: sqlite3.Row, existing: sqlite3.Row | None, new: str) -> sqlite3.Row:
+        """Move a pre-symbol row to its new id. When both ids already exist, the new row survives and inherits
+        the legacy human review unless it carries one of its own (a verifier verdict never outranks a person);
+        references follow in either case."""
+        old = legacy["id"]
+        if existing is None:
+            cur.execute("UPDATE rules SET id=? WHERE id=?", (new, old))
+            cur.execute("UPDATE rule_history SET rule_id=? WHERE rule_id=?", (new, old))
+        else:
+            if legacy["reviewed_by"] == "human" and existing["reviewed_by"] != "human":
+                cur.execute(
+                    "UPDATE rules SET status=?, review_note=?, reviewed_by='human', statement=?, rationale=? WHERE id=?",
+                    (legacy["status"], legacy["review_note"], legacy["statement"], legacy["rationale"], new),
+                )
+            cur.execute("DELETE FROM rules WHERE id=?", (old,))
+            cur.execute("DELETE FROM rule_history WHERE rule_id=?", (old,))
+        self._rename_references(cur, old, new)
+        return cur.execute("SELECT * FROM rules WHERE id=?", (new,)).fetchone()
+
+    def _rename_references(self, cur: sqlite3.Cursor, old: str, new: str) -> None:
+        for row in cur.execute("SELECT rowid, rules FROM terms WHERE rules LIKE ?", (f"%{old}%",)).fetchall():
+            cur.execute("UPDATE terms SET rules=? WHERE rowid=?", (json.dumps(_replace_ids(json.loads(row["rules"] or "[]"), old, new)), row["rowid"]))
+        for row in cur.execute("SELECT rowid, id, tags FROM rules WHERE tags LIKE ?", (f"%{old}%",)).fetchall():
+            # A rule cannot be a duplicate of itself once the two variants are one row.
+            tags = [t for t in _replace_ids(json.loads(row["tags"] or "[]"), old, new) if not (row["id"] == new and t == f"duplicate-of/{new}")]
+            cur.execute("UPDATE rules SET tags=? WHERE rowid=?", (json.dumps(tags), row["rowid"]))
+        for row in cur.execute("SELECT rowid, rule_ids, cross_cutting, duplicates FROM rule_groups").fetchall():
+            values = [json.dumps(_replace_ids(json.loads(row[col] or "[]"), old, new)) for col in ("rule_ids", "cross_cutting", "duplicates")]
+            cur.execute("UPDATE rule_groups SET rule_ids=?, cross_cutting=?, duplicates=? WHERE rowid=?", (*values, row["rowid"]))
+        if cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings'").fetchone():
+            # (project, doc_id) is the primary key: where the new document is already embedded, the stale legacy vector goes.
+            cur.execute("DELETE FROM embeddings WHERE doc_id=? AND project IN (SELECT project FROM embeddings WHERE doc_id=?)", (f"rule:{old}", f"rule:{new}"))
+            cur.execute("UPDATE embeddings SET doc_id=? WHERE doc_id=?", (f"rule:{new}", f"rule:{old}"))
 
     def _upsert_term(self, cur: sqlite3.Cursor, term: GlossaryTerm, project: str) -> None:
         existing = cur.execute("SELECT * FROM terms WHERE project=? AND term=?", (project, term.term)).fetchone()

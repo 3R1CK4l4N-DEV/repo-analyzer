@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterable
 from pathlib import Path
 
 from devanalyzer.config import Settings, get_settings
@@ -54,17 +55,20 @@ class ProjectReader:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
-    def read(self, path: str | Path) -> list[SourceFile]:
+    def read(self, path: str | Path, *, exclude_paths: Iterable[str | Path] = ()) -> list[SourceFile]:
         root = Path(path).resolve()
+        excluded = tuple(Path(p).resolve() for p in exclude_paths)
         if not root.exists():
             raise FileNotFoundError(f"Path {root} not found")
+        if any(root.is_relative_to(p) for p in excluded):
+            return []
         if root.is_file():
             return [f for f in [self._to_source_file(root, root.parent)] if f]
 
         gitignore = GitIgnore.from_dir(root)
         max_bytes = self.settings.max_file_size_kb * 1024
         files: list[SourceFile] = []
-        for file in self._walk(root, root, gitignore):
+        for file in self._walk(root, root, gitignore, excluded):
             if file.suffix.lower() not in self.settings.supported_extensions:
                 continue
             if file.stat().st_size > max_bytes:
@@ -75,7 +79,9 @@ class ProjectReader:
         files.sort(key=lambda f: f.rel_path)
         return files
 
-    def _walk(self, current: Path, root: Path, gitignore: GitIgnore):
+    def _walk(self, current: Path, root: Path, gitignore: GitIgnore, excluded: tuple[Path, ...] = ()):
+        if excluded and any(current.resolve().is_relative_to(p) for p in excluded):
+            return
         try:
             entries = sorted(current.iterdir(), key=lambda p: p.name)
         except PermissionError:
@@ -85,8 +91,8 @@ class ProjectReader:
             if entry.is_dir():
                 if entry.name in self.settings.ignore_dirs or gitignore.ignored(rel, True):
                     continue
-                yield from self._walk(entry, root, gitignore)
-            elif entry.is_file() and not gitignore.ignored(rel, False):
+                yield from self._walk(entry, root, gitignore, excluded)
+            elif entry.is_file() and not gitignore.ignored(rel, False) and (not excluded or not any(entry.resolve().is_relative_to(p) for p in excluded)):
                 yield entry
 
     def _to_source_file(self, file: Path, root: Path) -> SourceFile | None:

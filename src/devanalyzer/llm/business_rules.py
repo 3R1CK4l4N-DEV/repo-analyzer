@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -83,8 +84,6 @@ _STOPWORDS = {
     "be",
     "is",
     "must",
-    "not",
-    "no",
     "el",
     "la",
     "los",
@@ -105,13 +104,52 @@ _STOPWORDS = {
     "puede",
     "pueden",
 }
+_NEGATIONS = {"not", "no", "never", "cannot", "without", "nunca", "sin", "jamas", "tampoco"}
+_CONSTRAINT_WORDS = set(
+    "must may can should required optional only unless except before after least most less greater below above minimum maximum "
+    "debe puede pueden obligatorio opcional solo salvo excepto antes despues menor mayor minimo maximo".split()
+)
+_SYMBOLS = re.compile(r"<=|>=|!=|==|[<>=≤≥%$€£]|(?<!\w)[+\-−](?=\d)")
+
+
+def _normalized_statement(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text.replace("’", "'")).encode("ascii", "ignore").decode().lower()
+    return text.replace("can't", "cannot").replace("won't", "will not").replace("n't", " not")
 
 
 def _tokens(text: str) -> set[str]:
-    import unicodedata
+    return {t for t in re.findall(r"[a-z0-9]+", _normalized_statement(text)) if t not in _STOPWORDS and (len(t) > 1 or t.isdigit())}
 
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
-    return {t for t in re.findall(r"[a-z0-9]+", text) if t not in _STOPWORDS and len(t) > 1}
+
+def _constraint_signature(text: str) -> tuple:
+    """Conservative guards: similar wording alone does not establish equivalent constraints."""
+    normalized = _normalized_statement(text)
+    words = re.findall(r"[a-z]+", normalized)
+    return (
+        tuple(re.findall(r"(?<!\w)[$€£]?[+\-−]?\d+(?:[.,]\d+)*[%$€£]?", text)),
+        tuple((word, tuple(words[i + 1 : i + 3])) for i, word in enumerate(words) if word in _NEGATIONS),
+        tuple(word for word in words if word in _CONSTRAINT_WORDS),
+        tuple(_SYMBOLS.findall(text)),
+    )
+
+
+def _term_key(term: str) -> str:
+    return " ".join(term.split()).casefold()
+
+
+def _register_term(glossary: dict[str, GlossaryTerm], term: str, definition: str = "") -> GlossaryTerm:
+    """ "Entidad" and "entidad" are one term (and one note on case-insensitive file systems); a capitalised
+    spelling wins over an all-lowercase one and the first non-empty definition is kept."""
+    key = _term_key(term)
+    entry = glossary.get(key)
+    if entry is None:
+        entry = glossary[key] = GlossaryTerm(term=term, definition=definition)
+    else:
+        if entry.term.islower() and not term.islower():
+            entry.term = term
+        if definition and not entry.definition:
+            entry.definition = definition
+    return entry
 
 
 def _same_evidence(a: BusinessRule, b: BusinessRule, tolerance: int = 2) -> bool:
@@ -123,35 +161,52 @@ def _same_evidence(a: BusinessRule, b: BusinessRule, tolerance: int = 2) -> bool
 
 
 def merge_near_duplicates(rules: list[BusinessRule], min_jaccard: float = 0.6) -> list[BusinessRule]:
-    """Structural (no-LLM) merge of rules that restate each other: same evidence span + same category,
-    or highly overlapping wording. The survivor keeps every evidence and the highest confidence."""
+    """Merge similarly worded rules in the same category with compatible constraint signatures.
+    This is a conservative heuristic, not semantic verification. Keep all distinct evidence spans."""
     merged: list[BusinessRule] = []
     for rule in rules:
         toks = _tokens(rule.statement)
+        signature = _constraint_signature(rule.statement)
         target = None
         for existing in merged:
+            if existing.category != rule.category or _constraint_signature(existing.statement) != signature:
+                continue
             etoks = _tokens(existing.statement)
             jaccard = len(toks & etoks) / len(toks | etoks) if toks | etoks else 0.0
-            same_span = _same_evidence(rule, existing) and existing.category == rule.category
-            if jaccard >= min_jaccard and (same_span or rule.source_unit == existing.source_unit or jaccard >= 0.8):
+            same_span = _same_evidence(rule, existing)
+            same_unit = rule.source_unit is not None and rule.source_unit == existing.source_unit
+            if jaccard >= min_jaccard and (same_span or same_unit or jaccard >= 0.8):
                 target = existing
                 break
         if target is None:
             merged.append(rule)
             continue
-        for ev in rule.evidence:
-            if not any(e.file == ev.file and e.line_start == ev.line_start for e in target.evidence):
-                target.evidence.append(ev)
-        target.confidence = max(target.confidence, rule.confidence)
-        for term in rule.domain_terms:
-            if term not in target.domain_terms:
-                target.domain_terms.append(term)
-        if "merged" not in target.tags:
-            target.tags.append("merged")
+        _merge_rule_details(target, rule)
     return merged
 
 
+def _merge_rule_details(target: BusinessRule, rule: BusinessRule) -> None:
+    for ev in rule.evidence:
+        if ev not in target.evidence:
+            target.evidence.append(ev)
+    target.confidence = max(target.confidence, rule.confidence)
+    for term in rule.domain_terms:
+        if term not in target.domain_terms:
+            target.domain_terms.append(term)
+    for tag in [*rule.tags, "merged"]:
+        if tag not in target.tags:
+            target.tags.append(tag)
+
+
 def rule_id(statement: str, file: str) -> str:
+    # Preserve existing IDs for ordinary prose while distinguishing >/<, signs, percentages and currencies.
+    marked = _SYMBOLS.sub(lambda match: f" symbol_{match.group().encode('utf-8').hex()} ", statement)
+    normalized = re.sub(r"\W+", " ", marked.lower()).strip()
+    return "BR-" + hashlib.sha1(f"{normalized}|{file}".encode()).hexdigest()[:10]
+
+
+def legacy_rule_id(statement: str, file: str) -> str:
+    """ID scheme before symbols were significant; knowledge bases created with it are migrated on ingest."""
     normalized = re.sub(r"\W+", " ", statement.lower()).strip()
     return "BR-" + hashlib.sha1(f"{normalized}|{file}".encode()).hexdigest()[:10]
 
@@ -220,7 +275,7 @@ class BusinessRuleExtractor:
         if limit:
             units = units[:limit]
         glossary: dict[str, GlossaryTerm] = {}
-        seen_rules: set[str] = set()
+        seen_rules: dict[str, BusinessRule] = {}
 
         # Phase 1: build prompts sequentially (file reads are cached, cheap).
         jobs: list[tuple[CodeUnit, str]] = []
@@ -255,20 +310,26 @@ class BusinessRuleExtractor:
             result.units_analyzed += 1
             for r in parsed.rules:
                 rule = self._to_rule(r, unit, root)
-                if rule.id in seen_rules:
-                    continue
-                seen_rules.add(rule.id)
-                result.rules.append(rule)
+                if existing := seen_rules.get(rule.id):
+                    _merge_rule_details(existing, rule)
+                else:
+                    seen_rules[rule.id] = rule
+                    result.rules.append(rule)
                 for term in rule.domain_terms:
-                    glossary.setdefault(term, GlossaryTerm(term=term, definition="")).rules.append(rule.id)
+                    _register_term(glossary, term)
             for t in parsed.glossary:
-                entry = glossary.setdefault(t.term, GlossaryTerm(term=t.term, definition=t.definition))
-                if not entry.definition:
-                    entry.definition = t.definition
+                entry = _register_term(glossary, t.term, t.definition)
                 if unit.fqn not in entry.related_units:
                     entry.related_units.append(unit.fqn)
 
         result.rules = merge_near_duplicates(result.rules)
+        # Removed duplicate IDs must not leave dangling glossary links.
+        for term in glossary.values():
+            term.rules = []
+        for rule in result.rules:
+            rule.domain_terms = list(dict.fromkeys(glossary[_term_key(t)].term for t in rule.domain_terms))
+            for term in rule.domain_terms:
+                glossary[_term_key(term)].rules.append(rule.id)
         result.glossary = sorted(glossary.values(), key=lambda g: g.term.lower())
         return result
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from devanalyzer.config import Settings
 from devanalyzer.core.metrics import compute_metrics, iter_types
 from devanalyzer.core.models import BuildInfo, BuildSystem, Language, LanguageAnalysis, SourceFile
+from devanalyzer.core.parse_cache import ParseCache
 from devanalyzer.core.plugin import language_ratio
 from devanalyzer.languages.java.kotlin_parser import KotlinParser
 from devanalyzer.languages.java.parser import JavaParser
@@ -16,6 +17,10 @@ class JavaPlugin:
 
     language = Language.JAVA
 
+    def __init__(self, *, incremental: bool = False):
+        self._java_cache = ParseCache() if incremental else None
+        self._kotlin_cache = ParseCache() if incremental else None
+
     def detect(self, files: list[SourceFile]) -> float:
         ratio = language_ratio(files, *JVM_LANGUAGES)
         has_build = any(f.name.lower() in ("pom.xml", "build.gradle", "build.gradle.kts") for f in files)
@@ -27,10 +32,16 @@ class JavaPlugin:
         java_files = [f for f in files if f.language == Language.JAVA]
         kotlin_files = [f for f in files if f.language == Language.KOTLIN and f.extension == ".kt"]
         java_parser = JavaParser()
-        parsed = [java_parser.parse(f) for f in java_files]
+        parsed = self._java_cache.parse(java_files, java_parser.parse) if self._java_cache is not None else [java_parser.parse(f) for f in java_files]
         if kotlin_files:
             kotlin_parser = KotlinParser()
-            parsed += [kotlin_parser.parse(f) for f in kotlin_files]
+            parsed += (
+                self._kotlin_cache.parse(kotlin_files, kotlin_parser.parse)
+                if self._kotlin_cache is not None
+                else [kotlin_parser.parse(f) for f in kotlin_files]
+            )
+        elif self._kotlin_cache is not None:
+            self._kotlin_cache.clear()
 
         units = [u for pf in parsed for u in pf.units]
         apply_stereotypes(units)

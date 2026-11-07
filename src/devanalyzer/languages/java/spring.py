@@ -76,7 +76,8 @@ JDK_PREFIXES = ("java.", "javax.", "jakarta.", "org.springframework.", "lombok."
 def _path_from_args(args: str | None) -> str:
     if not args:
         return ""
-    m = re.search(r"""(?:value|path)\s*=\s*\{?\s*"([^"]*)""", args) or re.match(r"""\s*"([^"]*)""", args)
+    # Accepts `"/x"`, `value = "/x"`, `path = {"/x", "/y"}` and the bare array form `{ "/x" }`; the first path wins.
+    m = re.search(r"""(?:value|path)\s*=\s*\{?\s*"([^"]*)""", args) or re.match(r"""\s*\{?\s*"([^"]*)""", args)
     return m.group(1) if m else ""
 
 

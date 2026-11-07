@@ -1,4 +1,5 @@
 import json
+import re
 
 from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 from devanalyzer.llm.business_rules import BusinessRuleExtractor
@@ -37,12 +38,15 @@ def test_vault_regeneration_preserves_manual_notes(spring_analysis, fixtures, tm
     _generate(spring_analysis, fixtures, tmp_path)
     note = tmp_path / "20 Classes" / "AccountService.md"
     text = note.read_text(encoding="utf-8")
+    text = text.replace(GENERATED_START, "Manual introduction before the generated block.\n\n" + GENERATED_START)
     text = text.replace("## Notes\n", "## Notes\n\nMy manual insight about this service.\n")
     note.write_text(text, encoding="utf-8")
 
     _generate(spring_analysis, fixtures, tmp_path)
     regenerated = note.read_text(encoding="utf-8")
     assert "My manual insight about this service." in regenerated
+    assert "Manual introduction before the generated block." in regenerated
+    assert regenerated.index("Manual introduction") < regenerated.index(GENERATED_START)
     assert regenerated.count(GENERATED_START) == 1 and regenerated.count(GENERATED_END) == 1
 
 
@@ -52,3 +56,31 @@ def test_vault_inside_existing_vault_folder(spring_analysis, fixtures, tmp_path)
     assert all(p.is_relative_to(tmp_path / "Projects" / "bank") for p in written)
     arch = (tmp_path / "Projects" / "bank" / "00 MOC" / "Architecture.md").read_text(encoding="utf-8")
     assert 'FROM "Projects/bank/20 Classes"' in arch
+
+
+def test_vault_colliding_note_names_are_written_once_and_deterministically(spring_analysis, tmp_path):
+    from devanalyzer.core.models import Endpoint, GlossaryTerm
+
+    analysis = spring_analysis.model_copy(deep=True)
+    first = analysis.endpoints[0]
+    analysis.languages[0].endpoints.append(Endpoint(http_method=first.http_method, path=first.path, handler="x.Other.handler", file="x/Other.java", line=1))
+    glossary = [GlossaryTerm(term="Account", definition="first"), GlossaryTerm(term="account", definition="second")]
+    for _ in range(3):
+        vault = ObsidianVault(tmp_path)
+        written = vault.generate(analysis, glossary=glossary)
+        assert len(written) == len(set(p.as_posix().casefold() for p in written))
+        note = (tmp_path / "25 Endpoints" / f"{first.http_method} {first.path.replace('/', '_')}.md").read_text(encoding="utf-8")
+        assert f"handler: {first.handler}" in note and "x.Other.handler" not in note
+        assert "first" in (tmp_path / "40 Glossary" / "Account.md").read_text(encoding="utf-8")
+    assert vault.updated == []
+
+
+def test_vault_does_not_rewrite_unchanged_notes(spring_analysis, tmp_path):
+    vault = ObsidianVault(tmp_path)
+    written = vault.generate(spring_analysis)
+    note = tmp_path / "20 Classes" / "AccountService.md"
+    note.write_text(re.sub(r"generated_at:.*", 'generated_at: "2000-01-01T00:00:00Z"', note.read_text(encoding="utf-8")), encoding="utf-8")
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in written}
+    assert vault.generate(spring_analysis) == written
+    assert vault.updated == []
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in written} == before

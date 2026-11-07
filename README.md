@@ -68,11 +68,14 @@ devanalyzer report <ruta> --format md -o informe.md
 devanalyzer snapshot <ruta>               # guarda baseline
 devanalyzer diff <ruta> [--update]
 
+# Modo watch: re-analiza al guardar y refresca graph.json, analysis.json y las notas del vault afectadas
+devanalyzer watch <ruta> [--interval 1 --debounce 0.5 --no-vault --once]
+
 # Verificar proveedor LLM configurado
 devanalyzer llm-ping
 ```
 
-Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (proveedor, modelo, prompt), así que re-ejecutar `rules extract` solo consulta al modelo para unidades cuyo código cambió.
+Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (proveedor, modelo, prompt), así que re-ejecutar `rules extract` solo consulta al modelo para unidades cuyo código cambió. `watch` reutiliza además los árboles ya parseados de los archivos sin cambios, publica los artefactos de forma atómica, sincroniza antes las ediciones hechas en Obsidian y archiva en `90 Archive/` las notas de código eliminado (conservando lo escrito fuera del bloque generado).
 
 ### Configurar el servidor MCP en un cliente
 
