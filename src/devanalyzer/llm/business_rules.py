@@ -274,7 +274,9 @@ class BusinessRuleExtractor:
         covered = {u.file for u in analysis.units if u.kind == CodeUnitKind.MODULE}
         out: list[CodeUnit] = []
         for file, functions in by_file.items():
-            stereotype = next((f.stereotype for f in functions if f.stereotype), None)
+            # A route handler makes the whole file a controller, whatever helper happens to be declared first.
+            found = [f.stereotype for f in functions if f.stereotype]
+            stereotype = "controller" if "controller" in found else (found[0] if found else None)
             if file in covered or stereotype not in wanted or sum(f.loc for f in functions) < min_loc:
                 continue
             if stereotype != "controller" and (file.endswith((".tsx", ".jsx")) or UI_MODULE_RE.search(file)):
@@ -488,7 +490,7 @@ class BusinessRuleExtractor:
         sources = {unit.fqn} | {c.fqn for c in unit.children if c.kind == CodeUnitKind.FUNCTION}
         # Classes depend on types; functions call and import other functions.
         kinds = {RelationKind.DEPENDS_ON, RelationKind.EXTENDS, RelationKind.IMPLEMENTS} | (
-            {RelationKind.CALLS, RelationKind.IMPORTS} if unit.kind == CodeUnitKind.MODULE else set()
+            {RelationKind.CALLS, RelationKind.IMPORTS} if unit.kind in (CodeUnitKind.MODULE, CodeUnitKind.FUNCTION) else set()
         )
         for rel in analysis.relations:
             if rel.source in sources and rel.kind in kinds and rel.target in index and rel.target not in dep_fqns and rel.target not in sources:

@@ -191,6 +191,53 @@ def test_maven_module_inherits_aggregator_parent_from_disk_and_within_project(se
     assert whole["orders/pom.xml"].versions == {"spring_boot": "3.4.1", "java": "17"} and whole["pom.xml"].versions["java"] == "21"
 
 
+def test_maven_relative_path_never_walks_sideways_or_too_far_up(settings, tmp_path):
+    elsewhere = _write(
+        tmp_path / "elsewhere", {"pom.xml": "<project><artifactId>evil</artifactId><properties><java.version>8</java.version></properties></project>"}
+    )
+    module = _write(
+        tmp_path / "a" / "b" / "c" / "module",
+        {
+            "pom.xml": (
+                "<project><parent><groupId>x</groupId><artifactId>shop</artifactId><version>1</version>"
+                "<relativePath>../../../../elsewhere/pom.xml</relativePath></parent><artifactId>m</artifactId></project>"
+            ),
+            "src/main/java/A.java": "public class A {}",
+        },
+    )
+    assert elsewhere.is_dir()
+    assert ProjectAnalyzer(settings).run(module).versions == {}  # sideways traversal ignored
+    (module / "pom.xml").write_text(
+        "<project><parent><groupId>x</groupId><artifactId>shop</artifactId><version>1</version><relativePath>../../../../pom.xml</relativePath></parent>"
+        "<artifactId>m</artifactId></project>",
+        encoding="utf-8",
+    )
+    (tmp_path / "pom.xml").write_text(
+        "<project><artifactId>root</artifactId><properties><java.version>21</java.version></properties></project>", encoding="utf-8"
+    )
+    assert ProjectAnalyzer(settings).run(module).versions == {}  # four levels up is beyond the ancestor allowance
+    (tmp_path / "a" / "b" / "pom.xml").write_text(
+        "<project><artifactId>mid</artifactId><properties><java.version>17</java.version></properties></project>", encoding="utf-8"
+    )
+    (module / "pom.xml").write_text(
+        "<project><parent><groupId>x</groupId><artifactId>mid</artifactId><version>1</version><relativePath>../../pom.xml</relativePath></parent>"
+        "<artifactId>m</artifactId></project>",
+        encoding="utf-8",
+    )
+    assert ProjectAnalyzer(settings).run(module).versions == {"java": "17"}  # direct ancestor within three levels
+
+
+def test_requirement_include_syntaxes():
+    from devanalyzer.core.build_detectors import _requirement_target
+
+    assert _requirement_target("-r requirements/base.txt") == "requirements/base.txt"
+    assert _requirement_target("-rbase.txt") == "base.txt"
+    assert _requirement_target("-r\tbase.txt") == "base.txt"
+    assert _requirement_target("--requirement base.txt") == "base.txt"
+    assert _requirement_target("--requirement=base.txt") == "base.txt"
+    assert _requirement_target("-r") == ""
+
+
 def test_spring_boot_detected_from_starters_without_parent():
     pom = _source(
         "pom.xml",
@@ -211,6 +258,7 @@ def test_node_generic_injection_aliases_and_function_calls(settings, tmp_path):
             "lib/db.ts": "export const db = {};\n",
             "app/api/posts/route.ts": (
                 'import { db } from "@/lib/db"\nimport { getUserSubscriptionPlan } from "@/lib/subscription"\n\n'
+                "function helper() {\n  return 1\n}\n\n"
                 "export async function POST(req: Request) {\n  const plan = await getUserSubscriptionPlan('u')\n  if (!plan.isPro) {\n    throw new Error('limit')\n  }\n  return new Response(null)\n}\n"
             ),
             "app/page.tsx": "export default function Page() {\n  return null\n}\n",
@@ -226,6 +274,10 @@ def test_node_generic_injection_aliases_and_function_calls(settings, tmp_path):
     )
     assert path_aliases([_source("tsconfig.json", (tmp_path / "tsconfig.json").read_text())]) == [("@/", ""), ("", "")]
     assert _loads_tolerant('{"paths": {"@/*": ["./*"]}, "include": ["**/*.ts"] /* c */}') == {"paths": {"@/*": ["./*"]}, "include": ["**/*.ts"]}
+    # No `baseUrl`: `paths` still resolve against the tsconfig directory, but bare imports stay packages (no catch-all).
+    assert path_aliases([_source("web/tsconfig.json", '{"compilerOptions": {"paths": {"@app/*": ["src/app/*"]}}}')]) == [("@app/", "web/src/app/")]
+    assert path_aliases([_source("tsconfig.json", '{"compilerOptions": {"baseUrl": 1}}')]) == []
+    assert _loads_tolerant('{"a": "unterminated \\') == {}  # trailing escape must not crash the comment stripper
     analysis = ProjectAnalyzer(settings).run(tmp_path)
     rels = {(r.source, r.target, r.kind) for r in analysis.relations}
     assert ("src/article/article.service.ArticleService", "src/article/article.entity.ArticleEntity", RelationKind.DEPENDS_ON) in rels
@@ -241,10 +293,14 @@ def test_node_generic_injection_aliases_and_function_calls(settings, tmp_path):
     assert not {"components/button", "app/page", "hooks/use-toast"} & set(modules)  # UI components and hooks are not rule candidates
     assert [c.fqn for c in BusinessRuleExtractor.candidate_units(analysis, {"controller"})] == ["app/api/posts/route"]
     route = modules["app/api/posts/route"]
-    assert (route.line_start, route.line_end) == (4, 10) and [c.name for c in route.children] == ["POST"]
+    # The helper declared before the handler must not demote the file from controller.
+    assert (route.line_start, route.line_end) == (4, 14) and [c.name for c in route.children] == ["helper", "POST"]
     # The prompt context of a module lists the functions it calls, with their signatures.
-    context = BusinessRuleExtractor(FakeProvider(), settings)._context(analysis, route)
+    extractor = BusinessRuleExtractor(FakeProvider(), settings)
+    context = extractor._context(analysis, route)
     assert "function getUserSubscriptionPlan(string)" in context and "route" not in context.split("Project context")[1].split("\n")[1]
+    # A bare function unit (not wrapped in a module) gets the same call/import context.
+    assert "function getUserSubscriptionPlan(string)" in extractor._context(analysis, post)
 
 
 # ---------------------------------------------------------------- #5 Prisma
@@ -284,6 +340,7 @@ def test_workspace_names_share_a_prefix_and_callers_never_wildcard_fixed_segment
     assert WorkspaceAnalyzer._project_for_name("lb://vets-service", names) == "spring-petclinic-vets-service"
     assert WorkspaceAnalyzer._project_for_name("http://payments-service/x", names) is None
     assert _common_prefix(["orders", "orders-legacy", "preorders"]) == "" and _common_prefix(["only-one"]) == ""
+    assert _common_prefix(["same-thing", "same-thing"]) == "" and _common_prefix(["shop-", "shop-api"]) == ""  # never swallow a whole name
     assert _path_matches("/api/customer/owners/${ownerId}/pets/${petId}", "/owners/{ownerId}/pets/{petId}")
     assert not _path_matches("/owners/details/${ownerId}", "/owners/{ownerId}/pets")
     assert not _path_matches("/api/customer/owners/${ownerId}/pets/${petId}", "/pets/visits")

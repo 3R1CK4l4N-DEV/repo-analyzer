@@ -106,15 +106,18 @@ class WorkspaceAnalysis(BaseModel):
 
 def _common_prefix(names: list[str]) -> str:
     """Longest prefix shared by two or more names, cut back to a `-`/`.` boundary ("" when there is none)."""
-    if len(names) < 2:
+    distinct = sorted(set(names))
+    if len(distinct) < 2:
         return ""
-    first, last = min(names), max(names)
+    first, last = distinct[0], distinct[-1]
     end = 0
     while end < min(len(first), len(last)) and first[end] == last[end]:
         end += 1
     shared = first[:end]
     boundary = max(shared.rfind("-"), shared.rfind("."))
-    return shared[: boundary + 1] if boundary > 0 else ""
+    prefix = shared[: boundary + 1] if boundary > 0 else ""
+    # A prefix that swallows a whole name (`shop` vs `shop-api`) would leave nothing to compare.
+    return prefix if all(len(n) > len(prefix) for n in distinct) else ""
 
 
 def _norm_path(path: str) -> str:

@@ -94,6 +94,14 @@ def _find(files: list[SourceFile], *names: str) -> list[SourceFile]:
     return [f for f in files if f.name.lower() in lowered]
 
 
+def _requirement_target(line: str) -> str:
+    """File named by a pip include line: `-r base.txt`, `-rbase.txt`, `--requirement base.txt`, `--requirement=base.txt`."""
+    if line.startswith("--requirement="):
+        return line[len("--requirement=") :].strip()
+    option = "--requirement" if line.startswith("--requirement") else "-r"
+    return line[len(option) :].strip()
+
+
 # ---------------------------------------------------------------- Maven
 class MavenDetector:
     NS = "{http://maven.apache.org/POM/4.0.0}"
@@ -128,8 +136,8 @@ class MavenDetector:
         target_rel = posixpath.normpath(posixpath.join(posixpath.dirname(pom.rel_path), relative))
         source = poms.get(target_rel)
         if source is None:
-            candidate = Path(pom.path).parent / relative if pom.path else None
-            if candidate is None or not candidate.is_file():
+            candidate = self._parent_on_disk(pom, relative)
+            if candidate is None:
                 return empty
             source = SourceFile(
                 name="pom.xml", path=str(candidate), rel_path=target_rel, extension=".xml", content=candidate.read_text(encoding="utf-8", errors="replace")
@@ -144,6 +152,20 @@ class MavenDetector:
         for child in props_el if props_el is not None else []:
             props[child.tag.replace(ns, "")] = (child.text or "").strip()
         return {"props": props, "versions": above["versions"]}
+
+    @staticmethod
+    def _parent_on_disk(pom: SourceFile, relative: str, max_levels_up: int = 3) -> Path | None:
+        """A parent POM outside the analysed files is only read from disk when it stays inside the project or is
+        the pom.xml of a direct ancestor directory (a module analysed on its own); `relativePath` never walks
+        sideways or deeper up the file system."""
+        if not pom.path:
+            return None
+        pom_abs = Path(pom.path).resolve()
+        root = pom_abs.parents[min(pom.rel_path.replace("\\", "/").count("/"), len(pom_abs.parents) - 1)]
+        candidate = (pom_abs.parent / relative).resolve()
+        inside = candidate.is_relative_to(root)
+        ancestor = candidate.name == "pom.xml" and candidate.parent in list(root.parents)[:max_levels_up]
+        return candidate if (inside or ancestor) and candidate.is_file() else None
 
     def _parse(self, pom: SourceFile, inherited: dict | None = None) -> BuildInfo | None:
         inherited = inherited or {"props": {}, "versions": {}}
@@ -410,8 +432,8 @@ class PythonBuildDetector:
             for line in req.content.splitlines():
                 line = line.split(" #", 1)[0].strip()
                 if line.startswith(("-r", "--requirement")):
-                    target = line.split("=", 1)[1] if line.startswith("--requirement=") else line.split(None, 1)[1] if " " in line else line[2:]
-                    included = by_path.get(posixpath.normpath(posixpath.join(posixpath.dirname(req.rel_path), target.strip())))
+                    target = _requirement_target(line)
+                    included = by_path.get(posixpath.normpath(posixpath.join(posixpath.dirname(req.rel_path), target))) if target else None
                     if included is not None:
                         visit(included)
                 elif line and not line.startswith(("#", "-")):

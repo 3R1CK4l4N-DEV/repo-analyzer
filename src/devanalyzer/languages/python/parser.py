@@ -143,7 +143,10 @@ class PythonParser:
         fqn = f"{parent}.{node.name}"
         # `from django.db.models import Model as M` -> the base is still Model for every heuristic downstream.
         aliases = {local: original for imp in pf.imports for local, original in imp.names.items() if local != original}
-        bases = [aliases.get(base, base) if "." not in base else base for b in node.bases for base in [_dotted(b) or ast.unparse(b)]]
+        bases: list[str] = []
+        for b in node.bases:
+            base = _dotted(b) or ast.unparse(b)
+            bases.append(base if "." in base else aliases.get(base, base))
         unit = CodeUnit(
             kind=CodeUnitKind.CLASS,
             name=node.name,

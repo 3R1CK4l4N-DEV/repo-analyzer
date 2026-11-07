@@ -1,6 +1,6 @@
 # DevAnalyzer — Estado actual y mejoras a definir
 
-Fecha: 2026-11-06 (actualizado tras iteración 5) · Rama `main` (local, 33 commits, sin push) · 140/140 tests
+Fecha: 2026-11-06 (actualizado tras iteración 5) · Rama `main` (local, 34 commits, sin push) · 142/142 tests
 
 ---
 
@@ -197,7 +197,7 @@ Se clonaron cuatro repos públicos que cubrían los huecos de validación (works
 | Django sin framework/deps (`pyproject` solo con ruff, `requirements.txt` → `-r`) | pyproject sin `[project]` no es manifiesto; se siguen `-r` y `requirements/*.txt` |
 | `Repository<ArticleEntity>` no generaba dependencia | Todos los identificadores del tipo genérico se resuelven |
 | Alias `@/` sin relaciones | `tsconfig` `paths`/`baseUrl` (parser tolerante a comentarios y `"@/*"`) |
-| Módulos Maven sin versiones | Herencia por `<parent>`/`relativePath` dentro del proyecto o en disco; Spring Boot por starters |
+| Módulos Maven sin versiones | Herencia por `<parent>`/`relativePath` dentro del proyecto o en disco (solo un `pom.xml` de un directorio ancestro directo, máx. 3 niveles: nunca lateral ni arbitrario); Spring Boot por starters |
 | Migraciones Django sin tablas | `CreateModel/AddField/AlterField/RemoveField/RenameField/RenameModel/DeleteModel`, mapeo `<app>_<model>` |
 
 ## 4b. Iteración 4 — completada

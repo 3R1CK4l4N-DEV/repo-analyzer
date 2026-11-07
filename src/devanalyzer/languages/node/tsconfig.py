@@ -24,7 +24,7 @@ def _strip_comments(text: str) -> str:
         if ch == '"':
             end = i + 1
             while end < n and text[end] != '"':
-                end += 2 if text[end] == "\\" else 1
+                end += 2 if text[end] == "\\" and end + 1 < n else 1
             out.append(text[i : end + 1])
             i = end + 1
         elif text.startswith("//", i):
@@ -57,7 +57,9 @@ def path_aliases(files: list[SourceFile]) -> list[tuple[str, str]]:
     config = min(configs, key=lambda f: (f.rel_path.count("/"), f.name != "tsconfig.json"))
     options = _loads_tolerant(config.content).get("compilerOptions") or {}
     config_dir = posixpath.dirname(config.rel_path)
-    base_dir = posixpath.normpath(posixpath.join(config_dir, str(options.get("baseUrl") or ".")))
+    base_url = options.get("baseUrl")
+    # Without `baseUrl`, `paths` are relative to the tsconfig and bare imports are packages, never project files.
+    base_dir = posixpath.normpath(posixpath.join(config_dir, str(base_url) if isinstance(base_url, str) and base_url else "."))
     base_dir = "" if base_dir == "." else base_dir
     aliases: list[tuple[str, str]] = []
     for pattern, targets in (options.get("paths") or {}).items():
@@ -67,6 +69,6 @@ def path_aliases(files: list[SourceFile]) -> list[tuple[str, str]]:
         target = "" if target == "." else target.rstrip("/") + "/"
         prefix = pattern.removesuffix("*")
         aliases.append((prefix, target))
-    if "baseUrl" in options:
+    if isinstance(base_url, str) and base_url:
         aliases.append(("", base_dir + "/" if base_dir else ""))
     return sorted(aliases, key=lambda a: -len(a[0]))
