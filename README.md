@@ -1,83 +1,89 @@
 # repo-analyzer (DevAnalyzer)
 
-Analizador de proyectos multi-lenguaje. Detecta tecnología, versiones, estructura y dependencias; construye un grafo de conocimiento del proyecto y, en fases posteriores, extrae reglas de negocio con IA y publica todo en un vault de Obsidian consultable por MCP.
+Analizador de proyectos multi-lenguaje (`v1.0.0`). Detecta tecnología, versiones, estructura, esquema de base de datos y dependencias; construye un grafo de conocimiento del proyecto; extrae y verifica reglas de negocio con IA; y publica todo en un vault de Obsidian navegable y en un servidor MCP para agentes IA.
 
-Hoja de ruta completa en [MEGAPLAN.md](MEGAPLAN.md).
+- **Manual de uso detallado:** [MANUAL_DE_USO.md](MANUAL_DE_USO.md)
+- **Estado y métricas de validación:** [STATUS.md](STATUS.md)
+- **Hoja de ruta y diseño:** [MEGAPLAN.md](MEGAPLAN.md)
 
-## Estado
+## Cobertura actual
 
-| Milestone | Estado |
+| Área | Soporte |
 |---|---|
-| M0 Fundaciones (paquete, CLI, config, reader) | Listo |
-| M1 Plugins de lenguaje + detección de build (Maven, Gradle, npm/pnpm/yarn, pip/poetry/uv) | Listo |
-| M2 Análisis Java con AST (tree-sitter) + heurísticas Spring | Listo |
-| M3 Grafo de conocimiento (NetworkX, JSON/GraphML) | Listo |
-| M4 Reglas de negocio con LLM (Ollama / OpenAI / Anthropic) | Listo |
-| M5 Knowledge base SQLite (reglas, glosario, historial, revisión humana) | Listo |
-| M6 Vault Obsidian (notas, MOCs, canvas, Dataview) | Listo |
-| M7 Servidor MCP | Listo |
-| M8 Plugin Node/TS (NestJS, Express) | Listo |
-| M9 Plugin Python (FastAPI, Flask) | Listo |
-| M10 Reportes HTML/Markdown y diff entre corridas | Listo |
+| **Lenguajes (AST)** | Java, Kotlin, JavaScript / TypeScript (`.js`, `.jsx`, `.ts`, `.tsx`), Python |
+| **Sistemas de build** | Maven (incl. herencia `<parent>`), Gradle (`.gradle` / `.kts`), npm / pnpm / yarn, pip / poetry / uv (`pyproject.toml`, `requirements*.txt` con `-r`) |
+| **Frameworks** | Spring Boot, Jakarta EE / JAX-RS, Quarkus, Micronaut, NestJS, Express, Next.js (App & Pages Router), FastAPI, Flask, Django / DRF |
+| **Esquema de BD** | Flyway / SQL, Liquibase (XML/YAML), Alembic, Django migrations, TypeORM, Prisma (`schema.prisma`) |
+| **Proveedores LLM** | Ollama (local por defecto), OpenAI, Anthropic |
+| **Salidas** | Consola (Rich), JSON, GraphML (Gephi/yEd), SQLite (`kb.sqlite`), Vault de Obsidian (Markdown + Mermaid + Canvas + Dataview), Reporte HTML/Markdown, Servidor MCP (stdio / SSE) |
 
 ## Instalación
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-pip install -e ".[dev]"
+.venv\Scripts\activate        # Windows (en Linux/macOS: source .venv/bin/activate)
+pip install -e ".[dev]"       # incluye pytest y soporte MCP
 cp .env.example .env          # opcional
 ```
 
-## Uso
+Extras opcionales para proveedores en la nube:
 
 ```bash
-# Resumen: lenguajes, build system, versiones, frameworks, estereotipos
-devanalyzer analyze <ruta-proyecto>
+pip install -e ".[openai]"
+pip install -e ".[anthropic]"
+```
 
-# Secciones extra y volcado JSON
-devanalyzer analyze <ruta> --show deps --show units --show endpoints --json analysis.json
+## Uso rápido
 
-# Grafo de conocimiento (se guarda en <ruta>/.devanalyzer/)
+```bash
+# 1. Resumen estático: lenguajes, build, versiones, frameworks, estereotipos, endpoints y tablas
+devanalyzer analyze <ruta-proyecto> --show all --json analysis.json
+
+# 2. Grafo de conocimiento (<ruta>/.devanalyzer/graph.json y graph.graphml)
 devanalyzer graph build <ruta>
 devanalyzer graph stats <ruta>
 devanalyzer graph query <ruta> --neighbors AccountService --depth 2
 devanalyzer graph query <ruta> --top 10
 devanalyzer graph query <ruta> --path AccountController AccountRepository
 
-# Reglas de negocio con IA (usa el proveedor de .env; cache en .devanalyzer/cache)
-devanalyzer rules extract <ruta> --lang Spanish            # todas las unidades con lógica
-devanalyzer rules extract <ruta> --stereotype service -l 5 # acotar
-devanalyzer rules extract <ruta> --verify -w 4             # segunda pasada: un modelo juez audita cada regla contra su evidencia
+# 3. Extracción, verificación y consolidación de reglas de negocio con IA
+devanalyzer rules extract <ruta> --lang Spanish --verify -w 4
+devanalyzer rules consolidate <ruta> --lang Spanish
 devanalyzer rules list <ruta> --status inferred
 devanalyzer rules review <ruta> BR-xxxxxxxxxx --status confirmed --note "validado con negocio"
 devanalyzer rules glossary <ruta>
+devanalyzer rules eval <ruta> --gold gold_rules.json
 
-# Vault de Obsidian (por defecto en <ruta>/.devanalyzer/vault)
+# 4. Índice y búsqueda semántica (embeddings en SQLite; también alimenta RAG en `rules extract`)
+devanalyzer index <ruta>
+devanalyzer search <ruta> "¿dónde se validan los límites de depósito?"
+
+# 5. Vault de Obsidian (sincroniza ediciones previas hechas en Obsidian hacia SQLite)
 devanalyzer vault <ruta>
-devanalyzer vault <ruta> --out "C:/MiVault" --folder "Proyectos/mi-app"   # dentro de un vault existente
+devanalyzer vault <ruta> --out "C:/MiVault" --folder "Proyectos/mi-app"
 
-# Servidor MCP para agentes IA (stdio por defecto; --sse para HTTP)
-devanalyzer serve <ruta>
+# 6. Modo watch incremental (re-analiza al guardar y actualiza grafo y notas afectadas)
+devanalyzer watch <ruta>
 
-# Reporte autocontenido (HTML con diagrama SVG, o Markdown)
+# 7. Reporte HTML/Markdown y comparación estructural entre corridas
 devanalyzer report <ruta>                 # .devanalyzer/report.html
 devanalyzer report <ruta> --format md -o informe.md
-
-# Diff estructural entre corridas (tipos, métodos, endpoints, deps, versiones)
-devanalyzer snapshot <ruta>               # guarda baseline
+devanalyzer snapshot <ruta>
 devanalyzer diff <ruta> [--update]
 
-# Modo watch: re-analiza al guardar y refresca graph.json, analysis.json y las notas del vault afectadas
-devanalyzer watch <ruta> [--interval 1 --debounce 0.5 --no-vault --once]
+# 8. Análisis multi-repositorio (microservicios: HTTP, eventos Kafka/Rabbit/SQS, tablas compartidas)
+devanalyzer workspace <directorio-con-repos>
 
-# Verificar proveedor LLM configurado
+# 9. Servidor MCP para agentes IA (stdio por defecto; --sse para HTTP)
+devanalyzer serve <ruta>
+
+# 10. Verificar conectividad con el proveedor LLM
 devanalyzer llm-ping
 ```
 
-Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (proveedor, modelo, prompt), así que re-ejecutar `rules extract` solo consulta al modelo para unidades cuyo código cambió. `watch` reutiliza además los árboles ya parseados de los archivos sin cambios, publica los artefactos de forma atómica, sincroniza antes las ediciones hechas en Obsidian y archiva en `90 Archive/` las notas de código eliminado (conservando lo escrito fuera del bloque generado).
+Consulta el [Manual de Uso](MANUAL_DE_USO.md) para ver todas las opciones, flujos recomendados y resolución de problemas.
 
-### Configurar el servidor MCP en un cliente
+## Configurar el servidor MCP en un cliente
 
 ```json
 {
@@ -90,50 +96,38 @@ Nota sobre incrementalidad: las respuestas del LLM se cachean por hash de (prove
 }
 ```
 
-Tools expuestas: `get_project_summary`, `list_code_units`, `get_code_unit`, `query_graph`, `find_path`, `list_endpoints`, `list_dependencies`, `get_business_rules`, `review_business_rule`, `search_knowledge`, `get_glossary`, `read_source`, `refresh_analysis`.
-
-### Calidad de las reglas: generador + juez
-
-`--verify` hace una segunda pasada donde un modelo juzga cada regla **solo contra el código citado** (con contexto). Marca `verdict/supported|partial|unsupported|technical`, corrige enunciados sobre-afirmados y rechaza automáticamente los no sustentados. Usa un modelo distinto al generador con `DEVANALYZER_VERIFY_MODEL` (p. ej. `qwen3:8b`): en spring-petclinic el juez `qwen3:8b` detectó las 2 alucinaciones de `qwen2.5-coder:7b` sin falsos positivos. Una confirmación humana nunca es pisada por el juez.
-
-### Flujo recomendado
-
-1. `devanalyzer analyze` para validar detección.
-2. `devanalyzer rules extract` (las reglas nacen con estado `inferred`).
-3. `devanalyzer vault` y abrir en Obsidian: revisar reglas, escribir notas manuales fuera del bloque generado.
-4. `devanalyzer rules review` para confirmar/rechazar; el estado sobrevive a re-extracciones.
-5. `devanalyzer serve` para que un agente consulte el conocimiento del proyecto.
-
-`graph.graphml` se puede abrir en Gephi o yEd; `graph.json` es formato node-link de NetworkX.
+Tools expuestas (17): `get_project_summary`, `list_code_units`, `get_code_unit`, `query_graph`, `find_path`, `list_endpoints`, `list_dependencies`, `get_flows`, `get_workspace_links`, `list_tables`, `get_business_rules`, `review_business_rule`, `search_knowledge`, `semantic_search`, `get_glossary`, `read_source`, `refresh_analysis` (más el recurso `devanalyzer://summary`).
 
 ## Desarrollo
 
 ```bash
 pytest -q
+ruff check src tests
 ```
-
-Los tests usan fixtures sintéticas en `tests/fixtures/`. Si existe `~/IdeaProjects/BancoProject` también se ejecuta una prueba de integración contra ese proyecto.
 
 ## Arquitectura
 
 ```
 src/devanalyzer/
-├── cli.py                 # typer CLI
+├── cli.py                 # CLI Typer
 ├── config.py              # pydantic-settings (.env, prefijo DEVANALYZER_)
 ├── core/
-│   ├── models.py          # SourceFile, CodeUnit, Endpoint, Relation, ProjectAnalysis…
+│   ├── models.py          # SourceFile, CodeUnit, Endpoint, Relation, DatabaseSchema, BusinessRule…
 │   ├── reader.py          # recorrido con .gitignore, binarios, límites
-│   ├── build_detectors.py # Maven, Gradle, npm, pip/poetry/uv
-│   ├── plugin.py          # LanguagePlugin Protocol + registry
-│   └── analyzer.py        # orquestador
+│   ├── build_detectors.py # Maven, Gradle, npm/pnpm/yarn, pip/poetry/uv
+│   ├── schema.py          # Flyway, Liquibase, Alembic, Django migrations, TypeORM, Prisma
+│   ├── parse_cache.py     # caché incremental de AST por hash de contenido
+│   ├── watch.py           # re-análisis incremental y actualización selectiva del vault
+│   ├── workspace.py       # análisis multi-repo (HTTP, eventos, tablas compartidas)
+│   └── analyzer.py        # orquestador principal
 ├── languages/
-│   ├── java/              # tree-sitter + heurísticas Spring
-│   ├── node/              # tree-sitter JS/TS + NestJS/Express
-│   └── python/            # ast nativo + FastAPI/Flask
-├── llm/                   # LLMProvider (ollama/openai/anthropic), extractor de reglas, prompts
-├── kb/                    # KnowledgeBase SQLite
-├── graph/                 # KnowledgeGraph (NetworkX)
-├── obsidian/              # generador de vault
-├── reporting/             # reporte HTML/MD y diff entre análisis
-└── mcp_server/            # servidor MCP (FastMCP)
+│   ├── java/              # tree-sitter Java & Kotlin + Spring / Jakarta / Quarkus / Micronaut
+│   ├── node/              # tree-sitter JS/TS + NestJS / Express / Next.js + tsconfig paths
+│   └── python/            # ast nativo + FastAPI / Flask / Django
+├── llm/                   # LLMProvider (ollama/openai/anthropic), extracción, juez, consolidación, eval
+├── kb/                    # KnowledgeBase SQLite + índice semántico (embeddings)
+├── graph/                 # KnowledgeGraph (NetworkX) + flujos end-to-end por endpoint
+├── obsidian/              # generador de vault Markdown, diagramas Mermaid y sync Obsidian -> KB
+├── reporting/             # reporte HTML/MD autocontenido y diff estructural
+└── mcp_server/            # servidor MCP (FastMCP stdio / SSE)
 ```

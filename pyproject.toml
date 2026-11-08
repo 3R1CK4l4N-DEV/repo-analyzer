@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "devanalyzer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Multi-language project analyzer: structure, dependencies, knowledge graph and AI-assisted business rules"
 readme = "README.md"
 requires-python = ">=3.11"
