@@ -1,0 +1,21 @@
+{
+  "name": "devanalyzer-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "data": "python -m devanalyzer.cli publish site repos.dev.json --out public/data"
+  },
+  "dependencies": {
+    "cytoscape": "3.34.4"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

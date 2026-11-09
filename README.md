@@ -79,9 +79,51 @@ devanalyzer serve <ruta>
 
 # 10. Verificar conectividad con el proveedor LLM
 devanalyzer llm-ping
+
+# 11. Crear bundles para publicación estática
+devanalyzer publish bundle <ruta-proyecto> --out bundle
+devanalyzer publish index site/public/data
+devanalyzer publish site site/repos.json --out site/public/data
 ```
 
 Consulta el [Manual de Uso](MANUAL_DE_USO.md) para ver todas las opciones, flujos recomendados y resolución de problemas.
+
+## Sitio estático (GitHub Pages)
+
+El workflow de Pages publica por proyecto el reporte HTML, el grafo interactivo, el vault descargable, los cambios respecto a la publicación anterior y, cuando `workspace` está activo, los enlaces entre servicios.
+
+El sitio queda disponible en `https://<usuario>.github.io/<repo>/`; para este repositorio, `https://3r1ck4l4n-dev.github.io/repo-analyzer/`. Tras activar **Settings → Pages → Source: GitHub Actions**, la primera publicación ocurre al hacer push a `main` o al ejecutar manualmente el workflow **GitHub Pages**.
+
+La fuente de verdad es `site/repos.json`:
+
+```json
+{
+  "workspace": false,
+  "projects": [
+    {
+      "repo": "owner/repo",
+      "ref": "main",
+      "slug": "repo",
+      "subdir": null,
+      "rules": null,
+      "kb": null
+    }
+  ]
+}
+```
+
+`repo` acepta `owner/name`, URL de GitHub o ruta local. `ref`, `slug`, `subdir`, `rules` y `kb` son opcionales. El disparo manual de GitHub Actions admite un `repo` y `ref` extra, pero esa entrada solo vive durante esa ejecución; añade el proyecto a `repos.json` para hacerlo persistente.
+
+La extracción LLM se ejecuta localmente: usa `devanalyzer rules extract <ruta>`, copia `.devanalyzer/rules.json` a `site/rules/<slug>.json` y referencia `"rules": "rules/<slug>.json"` en la entrada correspondiente.
+
+Para desarrollar el frontend:
+
+```bash
+cd site
+npm run data
+npm run dev
+npm run build
+```
 
 ## Configurar el servidor MCP en un cliente
 

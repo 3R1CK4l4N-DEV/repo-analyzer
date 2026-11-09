@@ -424,6 +424,48 @@ devanalyzer llm-ping
 
 ---
 
+### 5.11 `publish` — Bundles para sitio estático
+
+Genera artefactos consumibles por un frontend estático sin ejecutar LLM en CI.
+
+#### `devanalyzer publish bundle`
+
+Analiza un proyecto y escribe `manifest.json`, `analysis.json`, grafo, reportes y un vault comprimido. Puede incorporar reglas o una KB existente y comparar contra un snapshot anterior.
+
+```bash
+devanalyzer publish bundle C:/Proyectos/api --out bundle --slug api \
+  --repo-url https://github.com/acme/api --ref main --commit abc123
+
+devanalyzer publish bundle C:/Proyectos/api -o bundle \
+  --rules site/rules/api.json --baseline publicacion-anterior/analysis.json
+```
+
+Opciones principales: `--slug`, `--repo-url`, `--ref`, `--commit`, `--subdir`, `--rules`, `--kb`, `--baseline` y `--no-graphml`.
+
+#### `devanalyzer publish index`
+
+Reconstruye `projects.json` leyendo los manifests bajo `p/<slug>/`.
+
+```bash
+devanalyzer publish index site/public/data
+```
+
+#### `devanalyzer publish site`
+
+Procesa todos los proyectos de `repos.json`, continúa si falla uno y genera el índice global. `--extra` añade un repo solo a esa ejecución; `--baseline-url` habilita diffs contra la publicación anterior.
+
+```bash
+devanalyzer publish site site/repos.json --out site/public/data
+devanalyzer publish site site/repos.json -o site/public/data \
+  --extra owner/otro-repo@develop \
+  --baseline-url https://owner.github.io/repo/data \
+  --work-dir .devanalyzer-publish
+```
+
+Usa `--no-graphml` para omitir GraphML. Con `"workspace": true`, también publica `workspace.json` y `workspace.md`.
+
+---
+
 ## 6. Estructura de artefactos generados (`.devanalyzer/`)
 
 Todo lo que genera DevAnalyzer se guarda por defecto dentro de `<proyecto>/.devanalyzer/` (carpeta ignorada automáticamente en futuros escaneos):

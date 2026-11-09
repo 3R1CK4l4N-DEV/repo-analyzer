@@ -16,8 +16,10 @@ from devanalyzer.graph.knowledge_graph import KnowledgeGraph
 app = typer.Typer(help="DevAnalyzer: analyze projects, build a knowledge graph, extract business rules.", no_args_is_help=True)
 graph_app = typer.Typer(help="Build and query the project knowledge graph.", no_args_is_help=True)
 rules_app = typer.Typer(help="Extract and review AI-inferred business rules.", no_args_is_help=True)
+publish_app = typer.Typer(help="Build static-site bundles (reports, graphs, Obsidian vaults) for GitHub Pages.", no_args_is_help=True)
 app.add_typer(graph_app, name="graph")
 app.add_typer(rules_app, name="rules")
+app.add_typer(publish_app, name="publish")
 console = Console()
 
 
@@ -662,6 +664,115 @@ def workspace_cmd(
         t.add_row(link.kind, link.source, link.target, link.label, f"{link.evidence_file}:{link.evidence_line}" if link.evidence_file else "")
     console.print(t)
     console.print(f"[green]Written {out_dir / 'workspace.md'} and workspace.json[/green]  ({len(ws.links)} links, {len(ws.topics)} topics)")
+
+
+@publish_app.command("bundle")
+def publish_bundle(
+    project: Path = typer.Argument(..., exists=True, file_okay=False, help="Project root to analyze"),
+    out: Path = typer.Option(..., "--out", "-o", help="Bundle output directory"),
+    slug: str | None = typer.Option(None, "--slug"),
+    repo_url: str | None = typer.Option(None, "--repo-url"),
+    ref: str | None = typer.Option(None, "--ref"),
+    commit: str | None = typer.Option(None, "--commit"),
+    subdir: str | None = typer.Option(None, "--subdir"),
+    rules: Path | None = typer.Option(None, "--rules", exists=True, dir_okay=False),
+    kb: Path | None = typer.Option(None, "--kb", exists=True, dir_okay=False),
+    baseline: Path | None = typer.Option(None, "--baseline", exists=True, dir_okay=False),
+    graphml: bool = typer.Option(True, "--graphml/--no-graphml"),
+):
+    """Build one self-contained publication bundle."""
+    import zipfile
+
+    from devanalyzer.publishing.bundle import PublishSource, build_bundle
+
+    source = PublishSource(repo_url=repo_url, ref=ref, commit=commit, subdir=subdir)
+    try:
+        manifest = build_bundle(
+            project,
+            out,
+            slug=slug,
+            source=source,
+            rules_path=rules,
+            kb_path=kb,
+            baseline=baseline,
+            graphml=graphml,
+            settings=get_settings(),
+        )
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    with zipfile.ZipFile(out / manifest.artifacts["vault_zip"]) as archive:
+        notes = sum(name.endswith(".md") for name in archive.namelist())
+    console.print(f"[green]{manifest.slug}[/green]: {notes} notes, {len(manifest.artifacts)} artifacts, vault.zip {manifest.sizes['vault.zip'] / 1024:.1f} KB")
+    console.print(f"Manifest: {out / 'manifest.json'}")
+
+
+@publish_app.command("index")
+def publish_index(
+    data_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="Directory containing p/<slug>/manifest.json bundles"),
+):
+    """Rebuild the site-wide projects index."""
+    from devanalyzer.publishing.site import write_index
+
+    path = write_index(data_dir)
+    count = len(json.loads(path.read_text(encoding="utf-8"))["projects"])
+    console.print(f"[green]{path}[/green]: {count} projects")
+
+
+@publish_app.command("site")
+def publish_site_cmd(
+    config: Path = typer.Argument(..., exists=True, dir_okay=False, help="Path to repos.json"),
+    out: Path = typer.Option(..., "--out", "-o", help="Static data output directory"),
+    extra: list[str] = typer.Option([], "--extra", help="Additional owner/name[@ref] or GitHub URL"),
+    baseline_url: str | None = typer.Option(None, "--baseline-url"),
+    work_dir: Path | None = typer.Option(None, "--work-dir", file_okay=False),
+    graphml: bool = typer.Option(True, "--graphml/--no-graphml"),
+):
+    """Analyze all configured repositories and build GitHub Pages data."""
+    from devanalyzer.publishing.site import publish_site
+
+    messages: list[str] = []
+
+    def progress(message: str) -> None:
+        messages.append(message)
+        color = "yellow" if message.startswith(("ERROR", "WARNING")) else "dim"
+        console.print(f"[{color}]{message}[/{color}]")
+
+    try:
+        manifests = publish_site(
+            config,
+            out,
+            extra=extra,
+            baseline_url=baseline_url,
+            work_dir=work_dir,
+            graphml=graphml,
+            progress=progress,
+            settings=get_settings(),
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    table = Table(title="Published projects")
+    table.add_column("Slug")
+    table.add_column("Commit")
+    table.add_column("Files", justify="right")
+    table.add_column("LOC", justify="right")
+    table.add_column("Endpoints", justify="right")
+    table.add_column("vault.zip KB", justify="right")
+    for manifest in manifests:
+        table.add_row(
+            manifest.slug,
+            (manifest.source.commit or "-")[:8],
+            str(manifest.summary["files"]),
+            str(manifest.summary["loc"]),
+            str(manifest.summary["endpoints"]),
+            f"{manifest.sizes['vault.zip'] / 1024:.1f}",
+        )
+    console.print(table)
+    errors = sum(message.startswith("ERROR") for message in messages)
+    if errors:
+        console.print(f"[yellow]{errors} project(s) failed; successful bundles were still published.[/yellow]")
 
 
 @app.command("serve")

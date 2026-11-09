@@ -18,3 +18,8 @@ venv/
 
 # DevAnalyzer output
 .devanalyzer/
+
+# Static site
+site/node_modules/
+site/dist/
+site/public/data/

@@ -1,0 +1,25 @@
+{
+  "workspace": true,
+  "projects": [
+    {
+      "repo": "../tests/fixtures/java_spring",
+      "slug": "java-spring"
+    },
+    {
+      "repo": "../tests/fixtures/node_nest",
+      "slug": "node-nest"
+    },
+    {
+      "repo": "../tests/fixtures/python_fastapi",
+      "slug": "python-fastapi"
+    },
+    {
+      "repo": "../tests/fixtures/workspace/orders-service",
+      "slug": "orders-service"
+    },
+    {
+      "repo": "../tests/fixtures/workspace/billing-service",
+      "slug": "billing-service"
+    }
+  ]
+}

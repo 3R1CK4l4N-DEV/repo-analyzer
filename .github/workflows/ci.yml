@@ -29,3 +29,23 @@ jobs:
           devanalyzer analyze tests/fixtures/java_spring --show endpoints
           devanalyzer graph build tests/fixtures/node_nest --out out_graph
           devanalyzer report tests/fixtures/python_fastapi --out out_report.html
+          devanalyzer publish bundle tests/fixtures/java_spring --out out_bundle --repo-url https://example.com/x
+
+  site:
+    name: Static site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - run: npm run typecheck
+        working-directory: site
+      - run: npm test
+        working-directory: site
+      - run: npm run build
+        working-directory: site

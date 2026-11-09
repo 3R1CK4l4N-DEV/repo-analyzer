@@ -1,0 +1,10 @@
+{
+  "workspace": false,
+  "projects": [
+    {
+      "repo": "https://github.com/3R1CK4l4N-DEV/repo-analyzer",
+      "ref": "main",
+      "slug": "repo-analyzer"
+    }
+  ]
+}
